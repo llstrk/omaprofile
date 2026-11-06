@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "dry.omaprofile",
+  "name": "Omaprofile",
+  "version": "0.1.0",
+  "author": "dry",
+  "license": "MIT",
+  "description": "Generic choice picker overlay. Used by the omaprofile CLI to pick a browser profile before a link opens.",
+  "kinds": [
+    "overlay"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "overlay": "Omaprofile.qml"
+  }
+}
