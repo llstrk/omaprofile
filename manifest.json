@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "dry.omaprofile",
+  "name": "Omaprofile",
+  "version": "0.2.0",
+  "author": "dry",
+  "license": "MIT",
+  "description": "Profile picker for links and web apps. The overlay is the picker; run bin/omaprofile install from this folder to make it the default browser.",
+  "kinds": [
+    "overlay"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "overlay": "plugin/Omaprofile.qml"
+  }
+}

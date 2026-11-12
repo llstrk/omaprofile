@@ -3,13 +3,14 @@ name = "omaprofile"
 version = "0.2.0"
 description = "Pick a profile before something launches (Omarchy)"
 requires-python = ">=3.11"
+license = "MIT"
 dependencies = []
 
-[project.scripts]
-omaprofile = "omaprofile.cli:main"
+# Run from a git checkout (bin/omaprofile install): install deploys plugin/ and
+# hypr/ from next to the package, which a wheel does not carry.
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]

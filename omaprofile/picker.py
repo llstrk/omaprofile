@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 
 from . import PLUGIN_ID
@@ -46,33 +47,64 @@ def _ipc(*args: str) -> str:
     return (proc.stdout + proc.stderr).strip()
 
 
-def pick(title: str, subtitle: str, choices: list[Choice], timeout: float = 600) -> str | None:
-    """Show the overlay; return the chosen id, or None when cancelled."""
+REFRESH_EVERY = 0.5  # seconds between `refresh` polls while the overlay is open
+
+
+def pick(title: str, subtitle: str, choices: list[Choice], timeout: float = 600,
+         refresh: Callable[[], list[Choice] | None] | None = None, body: str = "") -> str | None:
+    """Show the overlay; return the chosen id, or None when cancelled.
+
+    `body` is an optional paragraph under the title, wrapped to the card.
+
+    `refresh`, polled while the overlay is open, returns new rows when the data
+    behind them changed (None when it did not); the overlay swaps them in place.
+    """
     sel_fd, sel_path = tempfile.mkstemp(prefix="omaprofile.sel.")
     os.close(sel_fd)
     done_path = sel_path + ".done"
+    choices_path = sel_path + ".choices"
     try:
         payload = json.dumps({
             "title": title,
             "subtitle": subtitle,
+            **({"body": body} if body else {}),
             "choices": [asdict(c) for c in choices],
             "selectionFile": sel_path,
             "doneFile": done_path,
+            **({"choicesFile": choices_path} if refresh else {}),
         })
+        if refresh:
+            _write_rows(choices_path, choices)
         reply = _ipc("shell", "summon", PLUGIN_ID, payload)
         if reply != "ok":
             raise PickerError(f"picker unavailable ({reply}); is the {PLUGIN_ID} plugin enabled?")
 
         deadline = time.monotonic() + timeout
+        next_refresh = time.monotonic() + REFRESH_EVERY
         while not os.path.exists(done_path):
-            if time.monotonic() > deadline:
+            now = time.monotonic()
+            if now > deadline:
                 _ipc("-q", "shell", "hide", PLUGIN_ID)
                 raise PickerError("pick timed out")
+            if refresh and now >= next_refresh:
+                next_refresh = now + REFRESH_EVERY
+                rows = refresh()
+                if rows is not None:
+                    _write_rows(choices_path, rows)
             time.sleep(0.03)
-        return open(sel_path).read().strip() or None
+        with open(sel_path) as f:
+            return f.read().strip() or None
     finally:
-        for path in (sel_path, done_path):
+        for path in (sel_path, done_path, choices_path):
             _unlink(path)
+
+
+def _write_rows(path: str, rows: list[Choice]) -> None:
+    """Replace the choices file in one rename so the overlay never reads half of it."""
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump([asdict(c) for c in rows], f)
+    os.replace(tmp, path)
 
 
 def _unlink(path: str) -> None:
@@ -90,3 +122,10 @@ def detached(argv: list[str]) -> None:
     for fd in (0, 1, 2):
         os.dup2(devnull, fd)
     os.execvp("setsid", ["setsid", *argv])
+
+
+def notify(summary: str, body: str = "", urgency: str = "normal") -> None:
+    if shutil.which("notify-send"):
+        subprocess.run(["notify-send", "-a", "omaprofile", "-i", "chromium", "-u", urgency, summary, body],
+                       capture_output=True)
+

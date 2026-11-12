@@ -10,10 +10,11 @@ import qs.Ui
 // Summoned by the omaprofile CLI:
 //   omarchy-shell shell summon dry.omaprofile '<json>'
 // with a payload of
-//   { "title": "...", "subtitle": "...",
+//   { "title": "...", "subtitle": "...", "body": "..." (optional, wrapped),
 //     "choices": [ { "id": "Profile 1", "label": "Personal", "detail": "Profile 1",
 //                    "color": "#f3b2be", "glyph": "P" }, ... ],
-//     "selectionFile": "/tmp/x", "doneFile": "/tmp/y" }
+//     "selectionFile": "/tmp/x", "doneFile": "/tmp/y",
+//     "choicesFile": "/tmp/z" }     (optional; rewritten to refresh the rows)
 //
 // The chosen id is written to selectionFile and doneFile is touched. On
 // cancel only doneFile is touched. Same round-trip as omarchy.image-picker.
@@ -27,8 +28,10 @@ Item {
   property bool opened: false
   property string title: ""
   property string subtitle: ""
+  property string body: ""  // optional paragraph under the header, wrapped
   property string selectionFile: ""
   property string doneFile: ""
+  property string choicesPath: ""  // optional: rewritten by the CLI to refresh the rows
   property int selectedIndex: 0
   // Keys are ignored for a moment after opening so a held Enter from the
   // launching keybind, or typing aimed at another window, cannot pick.
@@ -51,9 +54,10 @@ Item {
   property int rowSpacing: Style.space(2)
   property int avatarSize: Style.space(30)
   property int headerHeight: Style.font.heading + Style.font.bodySmall + Style.space(10)
-  property int cardWidth: Math.min(Style.space(400), panel.width - Style.gapsOut * 2)
+  property int cardWidth: Math.min(Style.space(root.body.length > 0 ? 520 : 400), panel.width - Style.gapsOut * 2)
+  readonly property int bodyBlock: root.body.length > 0 ? bodyText.implicitHeight + Style.spacing.lg : 0
   property int cardHeight: Math.min(
-    root.contentMargin * 2 + root.headerHeight + Style.spacing.lg
+    root.contentMargin * 2 + root.headerHeight + Style.spacing.lg + root.bodyBlock
       + choices.count * (root.rowHeight + root.rowSpacing),
     panel.height - Style.gapsOut * 2)
 
@@ -75,11 +79,49 @@ Item {
 
     root.title = String(args.title || "Choose")
     root.subtitle = String(args.subtitle || "")
+    root.body = String(args.body || "")
     root.selectionFile = String(args.selectionFile || "")
     root.doneFile = String(args.doneFile || "")
+    root.choicesPath = String(args.choicesFile || "")
 
+    fill(args.choices)
+
+    var sel = parseInt(args.selected)
+    root.selectedIndex = (isNaN(sel) || sel < 0 || sel >= choices.count) ? 0 : sel
+    root.opened = true
+    root.armed = false
+    armTimer.restart()
+    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+
+  // Replace the rows of the open pick in place, keeping the cursor on the same
+  // choice. The CLI rewrites `choicesFile` (named in the summon payload) when
+  // the data behind the rows changes on disk; the overlay watches it.
+  function setChoices(text) {
+    if (!root.opened || !root.doneFile) return "closed"
+    var list = []
+    try { list = JSON.parse(text) } catch (e) { return "invalid" }
+    if (!Array.isArray(list)) return "invalid"
+    var current = (root.selectedIndex < choices.count) ? choices.get(root.selectedIndex).choiceId : ""
+    fill(list)
+    root.selectedIndex = 0
+    for (var i = 0; i < choices.count; i++)
+      if (choices.get(i).choiceId === current) root.selectedIndex = i
+    return "ok"
+  }
+
+  FileView {
+    id: choicesFile
+    path: root.choicesPath
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: if (root.choicesPath) root.setChoices(text())
+  }
+
+  function fill(list) {
     choices.clear()
-    var list = Array.isArray(args.choices) ? args.choices : []
+    list = Array.isArray(list) ? list : []
     for (var i = 0; i < list.length; i++) {
       var c = list[i] || {}
       var id = String(c.id || "")
@@ -93,13 +135,6 @@ Item {
         glyph: String(c.glyph || label.charAt(0).toUpperCase())
       })
     }
-
-    var sel = parseInt(args.selected)
-    root.selectedIndex = (isNaN(sel) || sel < 0 || sel >= choices.count) ? 0 : sel
-    root.opened = true
-    root.armed = false
-    armTimer.restart()
-    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
   Timer {
@@ -107,6 +142,53 @@ Item {
     interval: root.armDelayMs
     repeat: false
     onTriggered: root.armed = true
+  }
+
+  // Omarchy has no install hook, so `omarchy plugin add` ends here: when the
+  // shell loads this overlay from the folder Omarchy cloned, run
+  // `omaprofile install --auto`. Until install has run, that summons this
+  // overlay with what install changes and asks; afterwards it only refreshes
+  // files an update changed. A copy installed from a checkout has no bin/
+  // next to it and skips this.
+  // `omarchy plugin remove` disables the plugin (unloading this overlay) and
+  // then deletes its folder. So when the overlay unloads, watch the folder for
+  // a few seconds: if it goes while omaprofile is still installed, the copy of
+  // the CLI kept outside it asks whether to undo omaprofile's changes. A shell
+  // restart, a disable or an update leaves the folder in place and the watch
+  // just ends.
+  readonly property string sourceDir: String((root.manifest && root.manifest.__sourceDir) || "").replace(/\/$/, "")
+  readonly property string removalWatchScript: [
+    'state="${XDG_STATE_HOME:-$HOME/.local/state}/omaprofile/install.json"',
+    'cleanup="${XDG_DATA_HOME:-$HOME/.local/share}/omaprofile/cleanup/bin/omaprofile"',
+    'i=0',
+    'while [ $i -lt 20 ]; do',
+    '  if [ ! -e "$1/manifest.json" ]; then',
+    '    [ -e "$state" ] && [ -x "$cleanup" ] && exec "$cleanup" uninstall --removed',
+    '    exit 0',
+    '  fi',
+    '  sleep 0.5; i=$((i + 1))',
+    'done'
+  ].join("\n")
+  // The shell sets `manifest` after loading the overlay, so keep the last
+  // folder seen: the binding is gone by the time onDestruction runs.
+  property string watchDir: ""
+  onSourceDirChanged: if (root.sourceDir) root.watchDir = root.sourceDir
+  Component.onDestruction: {
+    if (root.watchDir)
+      Quickshell.execDetached(["sh", "-c", root.removalWatchScript, "omaprofile-removal-watch", root.watchDir])
+  }
+
+  Timer {
+    id: autoInstallTimer
+    interval: 3000  // let the notification server come up at login
+    running: true
+    repeat: false
+    onTriggered: {
+      var dir = root.sourceDir
+      if (dir)
+        Quickshell.execDetached(["sh", "-c", '[ -x "$1" ] && exec "$1" install --auto', "omaprofile",
+                                 dir + "/bin/omaprofile"])
+    }
   }
 
   function close() {
@@ -136,6 +218,7 @@ Item {
     var done = root.doneFile
     root.selectionFile = ""
     root.doneFile = ""
+    root.choicesPath = ""
     root.opened = false
     if (!done) return
 
@@ -269,10 +352,24 @@ Item {
           }
         }
 
+        Text {
+          id: bodyText
+          textFormat: Text.PlainText
+          width: parent.width
+          visible: root.body.length > 0
+          text: root.body
+          color: root.foreground
+          opacity: 0.8
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          wrapMode: Text.Wrap
+          lineHeight: 1.15
+        }
+
         ListView {
           id: list
           width: parent.width
-          height: parent.height - root.headerHeight - parent.spacing
+          height: parent.height - root.headerHeight - parent.spacing - root.bodyBlock
           model: choices
           clip: true
           spacing: root.rowSpacing

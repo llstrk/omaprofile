@@ -10,20 +10,126 @@ The same picker fronts any other "which one?" step. Contexts such as
 `terminal` are defined in the config with their choices and commands, and
 scripts can call the generic `omaprofile pick`.
 
+## Requirements
+- [Omarchy](https://omarchy.org) 4.5 or newer: the shell plugin system
+  (`omarchy-shell`, `omarchy plugin`) and the Lua Hyprland config
+  (`~/.config/hypr/hyprland.lua`).
+- Chromium, Omarchy's default browser. Other Chromium-family browsers work
+  with `browser.command` and `browser.configDir` set (see Config).
+- Python 3.11+ (Omarchy ships it). No other dependencies.
+
+## Install
+```sh
+omarchy plugin add https://github.com/llstrk/omaprofile.git --enable
+```
+`omarchy plugin add` (alias `omarchy plugin install`) clones the repository
+into `~/.config/omarchy/plugins/dry.omaprofile/` and enables the picker
+overlay. A few seconds later the overlay asks to finish setting up and lists
+what that changes; nothing outside the plugin folder is touched until you
+pick **Set it up**. **Not now** asks again the next time the shell starts,
+**Don't ask again** stops asking. Setting up (or running
+`~/.config/omarchy/plugins/dry.omaprofile/bin/omaprofile install` yourself):
+- writes `~/.local/bin/omaprofile`, a small script that runs the clone;
+- writes `~/.config/omaprofile/config.json` with the defaults, unless one exists;
+- writes `~/.local/share/applications/omaprofile.desktop` and makes it the
+  default browser, after recording the current link handlers;
+- points the web app launchers in `~/.local/share/applications/` at omaprofile;
+- copies `hypr/omaprofile.lua` to `~/.config/hypr/` and adds
+  `require("hypr.omaprofile")` to `~/.config/hypr/hyprland.lua`, just before
+  `require("default.hypr.omarchy")`. If that line is not there, it says what
+  to add by hand. Hyprland is reloaded so the web app keybindings use the
+  picker right away.
+
+Last, the overlay asks whether each profile should get its own theme (No is
+the default); see [A theme per profile](#a-theme-per-profile).
+
+Open a link from any app to try it. If Chromium has never run there are no
+profiles yet, so links open in plain Chromium until it has made one.
+
+### Update
+```sh
+omarchy plugin update dry.omaprofile
+```
+The update pulls the overlay and the CLI together (the CLI runs from the
+clone); when the shell reloads the overlay it also refreshes the Hyprland hook
+and `~/.local/bin/omaprofile` if they changed. Run `omaprofile install` after
+`omarchy webapp install` adds a web app, so the new one goes through the
+picker too.
+
+### A theme per profile
+Omarchy's Chromium theme is a mandatory policy, so every profile looks the
+same. As a recommended policy it only applies when a profile first starts;
+after that each profile can pick its own theme ("Customize Chromium" on a new
+tab), which makes profiles easy to tell apart.
+```sh
+omaprofile policy             # mandatory or recommended
+omaprofile policy recommend   # make it recommended (asks for your password)
+omaprofile policy restore     # make it mandatory again
+```
+Recommended, it no longer follows Omarchy theme changes. Chrome, Edge and Brave
+are handled the same way where Omarchy set them up. If omaprofile made the
+change, `omaprofile uninstall` reverts it.
+
+### Uninstall
+```sh
+omarchy plugin remove dry.omaprofile
+```
+As the overlay unloads it sees its folder go, and a small floating terminal
+asks whether to undo omaprofile's changes (j/k or arrows, Enter; run from a
+copy of the CLI that install keeps in `~/.local/share/omaprofile/cleanup/`).
+**Undo its changes**
+restores the link handlers recorded at install
+(Omarchy's own `omarchy-browser.desktop` routing included), points the web
+apps back at `omarchy-launch-webapp`, removes the `require` line, the hook and
+`~/.local/bin/omaprofile`, and makes Omarchy's theme policy mandatory again if
+omaprofile changed it; the config stays. **Leave them for now** (or Esc)
+changes nothing: links open in the browser directly, and the next link after
+the next login asks again. The same goes if the shell was not running to see
+the removal.
+`omaprofile uninstall` does all of that but keeps the plugin, disabled.
+Where install recorded nothing, Omarchy's Hyprland list goes back to
+`omarchy-browser.desktop` and `mimeapps.list` to `chromium.desktop`; pass
+another desktop id for the latter: `omaprofile uninstall brave-browser.desktop`.
+
+### From a git checkout (development)
+```sh
+git clone https://github.com/llstrk/omaprofile.git ~/Work/omaprofile
+~/Work/omaprofile/bin/omaprofile install
+```
+Run from any other folder, `install` copies the overlay into the plugins
+folder instead and links the CLI to the checkout; `git pull` updates the CLI,
+re-run `install` to update the overlay. `uninstall` then removes the copied
+overlay too. If the plugins folder already holds a clone made by
+`omarchy plugin add`, install refuses and points at that clone instead.
+
+## Troubleshooting
+Links opened from other apps have no terminal, so errors (bad config, the
+shell not running, a rule naming a missing profile) show up as a
+notification. Run the same command in a terminal to see the message there,
+e.g. `omaprofile https://example.com`. A rule whose profile no longer
+exists is skipped with a notification and the picker is shown instead.
+
 ## Layout
-- `bin/omaprofile` — launcher, symlinked to `~/.local/bin/omaprofile`.
-- `omaprofile/` — Python package, stdlib only, about 500 lines:
+- `bin/omaprofile` — launcher; `~/.local/bin/omaprofile` is a script that
+  runs it, falling back to the browser if it is gone.
+- `omaprofile/` — Python package, stdlib only:
   `cli.py` dispatch, `browser.py` profiles/rules/launch/default-browser,
-  `contexts.py` config-defined contexts, `picker.py` overlay round trip,
-  `config.py` paths and defaults, `install.py` deployment.
-- `plugin/` — the `dry.omaprofile` shell overlay (`manifest.json`,
-  `Omaprofile.qml`); `omaprofile install` copies it to
-  `~/.config/omarchy/plugins/dry.omaprofile/` and enables it.
+  `extensions.py` extension sync, `contexts.py` config-defined contexts,
+  `picker.py` overlay round trip, `config.py` paths and defaults,
+  `install.py` deployment, `policy.py` Omarchy's Chromium policy.
+- `manifest.json` — the `dry.omaprofile` plugin manifest, at the root so
+  `omarchy plugin add` can install the repository as is.
+- `plugin/Omaprofile.qml` — the picker overlay.
 - `hypr/omaprofile.lua` — Hyprland hook that routes Omarchy's web app
   keybindings through `omaprofile webapp open`; installed to
   `~/.config/hypr/omaprofile.lua`.
 - `tests/` — `python3 -m unittest discover -s tests`.
 - Config: `~/.config/omaprofile/config.json`.
+- Cleanup copy: `~/.local/share/omaprofile/cleanup/`, the CLI kept outside
+  the plugin folder so removing the plugin can still uninstall.
+- Install record: `~/.local/state/omaprofile/install.json` (previous link
+  handlers, restored by `uninstall`); `setup-declined` next to it after
+  "Don't ask again".
 - Desktop entry: `~/.local/share/applications/omaprofile.desktop`
   (default for http/https/text/html/about/unknown).
 
@@ -34,13 +140,20 @@ omaprofile browser open [flags...] [url]     pick a profile, open the link
 omaprofile browser launch <profile> [args]   open as a profile, no picker
 omaprofile browser profiles                  list profiles
 omaprofile webapp open <url> [flags...]      pick a profile, open as a web app
+omaprofile extensions [sync]                 pick a profile (or all), sync extensions
+omaprofile extensions sync all|<profile>     sync from the first profile, no picker
+omaprofile extensions list                   first profile's extensions vs the others
 omaprofile <context> open [args...]          pick a choice, run its command
 omaprofile <context> list                    list the context's choices
 omaprofile contexts                          list configured contexts
 omaprofile pick [--title T] [--subtitle S] CHOICE...
                                              generic picker; prints chosen id
                                              CHOICE = id|label|color|glyph|detail
-omaprofile install | uninstall               plugin + default browser
+omaprofile install                           plugin, default browser, web app hook
+omaprofile install --auto                    the overlay's call: ask to install if needed
+omaprofile uninstall [fallback.desktop]      undo install, restore the previous browser
+omaprofile policy [recommend|restore]        Omarchy's Chromium theme policy: show,
+                                             make it recommended, make it mandatory again
 omaprofile config                            print the config
 ```
 A bare URL, a browser flag, or no argument at all means `browser open`.
@@ -82,13 +195,16 @@ For scripts and tests: `omarchy-shell shell call dry.omaprofile choose <index>`.
 }
 ```
 - Rules skip the picker. First match wins; patterns are shell globs
-  (`fnmatch`), matched against the host or the full URL. `profile` is a
-  display name (`Work`) or directory (`Profile 1`).
+  (`fnmatch`), `host` matched against the link's host (case-insensitive),
+  `url` against the full URL. A rule needs a `profile` and at least one of
+  `host`/`url`. `profile` is a display name (`Work`) or directory (`Profile 1`).
 - `browser.command` is the browser binary; profiles are read from
   `~/.config/chromium/Local State` unless `browser.configDir` says otherwise.
-- A context's choice `command` runs through `bash -c` with any extra
-  arguments from `omaprofile <context> open ...` appended. Optional keys per
-  choice: `label`, `detail`, `color`, `glyph`.
+- A context's choice needs an `id` and a `command`; the command runs
+  through `bash -c` with any extra arguments from
+  `omaprofile <context> open ...` appended. Optional keys per choice:
+  `label`, `detail`, `color`, `glyph`. The default `terminal` context uses
+  Omarchy's own `tmux` and `herdr` launchers.
 - To use the terminal picker, bind e.g. `omaprofile terminal open` in
   `~/.config/hypr/bindings.lua`.
 
@@ -107,14 +223,30 @@ For scripts and tests: `omarchy-shell shell call dry.omaprofile choose <index>`.
   `~/.config/hypr/hyprland.lua` loads `require("hypr.omaprofile")` before
   `require("default.hypr.omarchy")`, which redefines `o.launch_webapp` and
   `o.launch_webapp_sole` so the preinstalled keybindings use omaprofile too.
+  If a future Omarchy renames those helpers the hook does nothing rather
+  than breaking the Hyprland config.
   Re-run `omaprofile install` after `omarchy webapp install` adds a new app.
-  `omaprofile uninstall` restores the Exec lines and removes the hook file
-  (the `require` line in hyprland.lua stays; delete it by hand).
+  `omaprofile uninstall` restores the Exec lines and removes both the
+  `require` line and the hook file.
   Browser rules apply to web apps as well, so a `host` rule fixes an app to
   a profile without the picker.
 - Round trip with the overlay is file based like `omarchy.image-picker`:
   the CLI passes `selectionFile`/`doneFile` in the summon payload and waits
   for `doneFile` to appear. Without a running shell it fails with an error.
+
+## Extensions
+The first profile (`Default`) is the source. `omaprofile extensions` opens
+the picker with "All profiles" plus every other profile, each showing what it
+is missing; choosing one opens the Chrome Web Store page of each missing
+extension in that profile, and "Add to Chromium" finishes it. Chromium signs
+extension settings in `Preferences`, so they cannot be written in directly.
+Only Web Store installs are compared: Omarchy's `--load-extension` ones,
+component and policy extensions already reach every profile. Extra
+extensions in other profiles are left alone.
+The browser profile picker also ends with a "Manage extensions" row that
+opens the same sync picker; when a link was waiting, the profile picker
+comes back afterwards so the link still opens. Bind it with e.g.
+`omaprofile extensions` in `~/.config/hypr/bindings.lua`.
 
 ## Ideas
 - "Always use this profile for this site" key in the picker that appends a rule.
