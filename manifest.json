@@ -5,7 +5,7 @@
   "version": "0.2.0",
   "author": "dry",
   "license": "MIT",
-  "description": "Profile picker for links and web apps. The overlay is the picker; run bin/omaprofile install from this folder to make it the default browser.",
+  "description": "Profile picker for links and web apps. Asks to set itself up as the default browser when it first loads.",
   "kinds": [
     "overlay"
   ],

@@ -11,9 +11,9 @@ The same picker fronts any other "which one?" step. Contexts such as
 scripts can call the generic `omaprofile pick`.
 
 ## Requirements
-- [Omarchy](https://omarchy.org) 4.5 or newer: the shell plugin system
-  (`omarchy-shell`, `omarchy plugin`) and the Lua Hyprland config
-  (`~/.config/hypr/hyprland.lua`).
+- [Omarchy](https://omarchy.org) with shell plugins (`omarchy-shell`,
+  `omarchy plugin`); tested on 4.5. The web app keybindings also use the Lua
+  Hyprland config (`~/.config/hypr/hyprland.lua`).
 - Chromium, Omarchy's default browser. Other Chromium-family browsers work
   with `browser.command` and `browser.configDir` set (see Config).
 - Python 3.11+ (Omarchy ships it). No other dependencies.
@@ -247,7 +247,3 @@ The browser profile picker also ends with a "Manage extensions" row that
 opens the same sync picker; when a link was waiting, the profile picker
 comes back afterwards so the link still opens. Bind it with e.g.
 `omaprofile extensions` in `~/.config/hypr/bindings.lua`.
-
-## Ideas
-- "Always use this profile for this site" key in the picker that appends a rule.
-- Remember the last choice per host and preselect it.
