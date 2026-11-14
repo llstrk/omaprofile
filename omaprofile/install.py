@@ -36,11 +36,13 @@ from .browser import Browser, current_handlers, desktop_exec_arg, register, unre
 
 SRC_ROOT = Path(__file__).resolve().parent.parent
 LAUNCHER = SRC_ROOT / "bin" / "omaprofile"
-# Relative to the repository root. The bar icon has a folder of its own: the shell
-# caches the listing of a folder it loaded QML from and does not see a file added
-# to it by an update until it restarts, while a new folder is read fresh.
-PLUGIN_FILES = ("manifest.json", "plugin/Omaprofile.qml", "bar/UpdateIcon.qml")
-OLD_PLUGIN_FILES = ("Omaprofile.qml",)  # flat layout copied by 0.2.0 and earlier
+# Relative to the repository root. A QML file keeps a path only while it stays
+# the same: until it restarts, the shell reuses what it compiled from a path and
+# the listing of a folder it loaded from, even across `omarchy plugin update`.
+# A path it has never loaded is read fresh, so a release that has to take effect
+# right away moves the file (0.3.0: from plugin/ into these folders).
+PLUGIN_FILES = ("manifest.json", "plugin/overlay/Omaprofile.qml", "plugin/bar/UpdateIcon.qml")
+OLD_PLUGIN_FILES = ("Omaprofile.qml", "plugin/Omaprofile.qml")  # copied by 0.2.0 and earlier
 # Omarchy starts every web app (launchers, keybindings, launch-or-focus) with
 # omarchy-launch-webapp. For a default browser it does not know, omaprofile
 # among them, that takes the browser command from chromium.desktop's Exec,
@@ -229,7 +231,8 @@ def copy_plugin() -> None:
 def remove_plugin_copy() -> None:
     for name in (*PLUGIN_FILES, *OLD_PLUGIN_FILES):
         (cfgmod.PLUGIN_DIR / name).unlink(missing_ok=True)
-    for folder in (cfgmod.PLUGIN_DIR / "plugin", cfgmod.PLUGIN_DIR / "bar", cfgmod.PLUGIN_DIR):
+    for folder in (cfgmod.PLUGIN_DIR / "plugin" / "overlay", cfgmod.PLUGIN_DIR / "plugin" / "bar",
+                   cfgmod.PLUGIN_DIR / "plugin", cfgmod.PLUGIN_DIR):
         try:
             folder.rmdir()
         except OSError:

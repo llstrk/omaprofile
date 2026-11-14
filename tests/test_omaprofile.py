@@ -840,14 +840,18 @@ class PluginModeTests(unittest.TestCase):
     def test_checkout_elsewhere_copies_overlay_and_drops_the_old_flat_file(self):
         self.plugins.mkdir(parents=True)
         (self.plugins / "Omaprofile.qml").write_text("old")
+        (self.plugins / "plugin").mkdir()
+        (self.plugins / "plugin" / "Omaprofile.qml").write_text("0.2.0")
         with mock.patch.object(inst, "SRC_ROOT", self.repo):
             self.assertFalse(inst.managed_by_omarchy())
             inst.copy_plugin()
         self.assertTrue((self.plugins / "manifest.json").is_file())
-        self.assertTrue((self.plugins / "plugin" / "Omaprofile.qml").is_file())
+        self.assertTrue((self.plugins / "plugin" / "overlay" / "Omaprofile.qml").is_file())
+        self.assertTrue((self.plugins / "plugin" / "bar" / "UpdateIcon.qml").is_file())
         self.assertFalse((self.plugins / "Omaprofile.qml").exists())
+        self.assertFalse((self.plugins / "plugin" / "Omaprofile.qml").exists())
         manifest = json.loads((self.plugins / "manifest.json").read_text())
-        self.assertEqual(manifest["entryPoints"]["overlay"], "plugin/Omaprofile.qml")
+        self.assertEqual(manifest["entryPoints"]["overlay"], "plugin/overlay/Omaprofile.qml")
         inst.remove_plugin_copy()
         self.assertFalse(self.plugins.exists())
 
@@ -1061,7 +1065,7 @@ class AutoInstallTests(unittest.TestCase):
             self.assertFalse(declined.exists())
 
     def test_overlay_runs_it_from_its_own_folder(self):
-        qml = (Path(__file__).resolve().parent.parent / "plugin" / "Omaprofile.qml").read_text()
+        qml = (Path(__file__).resolve().parent.parent / "plugin" / "overlay" / "Omaprofile.qml").read_text()
         self.assertIn('exec "$1" install --auto', qml)
         self.assertIn('dir + "/bin/omaprofile"', qml)
 
@@ -1328,7 +1332,7 @@ class RemovalWatchTests(unittest.TestCase):
     """The overlay's watch when it unloads, run as the overlay runs it."""
 
     def setUp(self):
-        qml = (Path(__file__).resolve().parent.parent / "plugin" / "Omaprofile.qml").read_text()
+        qml = (Path(__file__).resolve().parent.parent / "plugin" / "overlay" / "Omaprofile.qml").read_text()
         block = qml[qml.index("removalWatchScript: ["):]
         block = block[:block.index('].join("\\n")')]
         # Each line is a single-quoted JS string; undo its escapes as QML does.

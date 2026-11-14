@@ -14,10 +14,10 @@ import qs.Ui
 // told their plugin folder, so this runs the ~/.local/bin launcher, which
 // exists once omaprofile is set up; without it the icon stays hidden.
 //
-// The widget also runs the daily check, like the overlay does. After an
-// update the shell keeps the overlay it compiled before (until it restarts),
-// while this widget, new in its own folder, is loaded fresh; so checks start
-// right away. The check runs at most once a day however often it is asked.
+// The widget also runs the daily check, like the overlay does, so checks
+// keep going while the shell still runs an overlay compiled before an update
+// (it reuses compiled QML until it restarts). The check runs at most once a
+// day however often it is asked.
 
 BarWidget {
   id: root

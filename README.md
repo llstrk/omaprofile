@@ -125,10 +125,11 @@ exists is skipped with a notification and the picker is shown instead.
   `install.py` deployment, `policy.py` Omarchy's Chromium policy.
 - `manifest.json` — the `dry.omaprofile` plugin manifest, at the root so
   `omarchy plugin add` can install the repository as is.
-- `plugin/Omaprofile.qml` — the picker overlay.
-- `bar/UpdateIcon.qml` — the bar icon shown while an update is out. Its own
-  folder: a file added to a folder the shell already loaded QML from is not
-  found until the shell restarts.
+- `plugin/overlay/Omaprofile.qml` — the picker overlay.
+- `plugin/bar/UpdateIcon.qml` — the bar icon shown while an update is out.
+- Until it restarts, the shell keeps what it compiled from a QML path, even
+  across `omarchy plugin update`; a path it never loaded is read fresh. So a
+  release whose QML must take effect right away moves the file.
 - `CHANGELOG.md` — what each version changed; `omaprofile update` and the
   "installed" notification show the new entries.
 - `tests/` — `python3 -m unittest discover -s tests` runs everything,

@@ -12,8 +12,8 @@
   ],
   "keepLoaded": true,
   "entryPoints": {
-    "overlay": "plugin/Omaprofile.qml",
-    "barWidget": "bar/UpdateIcon.qml"
+    "overlay": "plugin/overlay/Omaprofile.qml",
+    "barWidget": "plugin/bar/UpdateIcon.qml"
   },
   "barWidget": {
     "displayName": "Omaprofile updates",
