@@ -12,6 +12,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import config as cfgmod
+from . import update
 from .picker import Choice, detached, notify, pick
 
 MIME_TYPES = [
@@ -176,7 +177,9 @@ class Browser:
             last[:] = [sig, new]
             return new if changed else None
 
-        chosen = pick(title, url_host(url) or "New window", last[1], refresh=refresh)
+        footer = update.footer(self.cfg)  # an update waiting: a line under the rows, U opens the updater
+        extra = {"footer": footer, "footer_command": [str(update.LAUNCHER), "update", "--open"]} if footer else {}
+        chosen = pick(title, url_host(url) or "New window", last[1], refresh=refresh, **extra)
         if chosen and not any(chosen == p.directory for p in self.profiles()) and extras:
             return chosen  # an extras row
         return self.resolve(chosen) if chosen else None

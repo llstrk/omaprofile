@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+"""Prepare a release: bin/release 0.4.0
+
+Sets the version in manifest.json, pyproject.toml and omaprofile/__init__.py,
+turns CHANGELOG.md's "## Unreleased" heading into "## 0.4.0", and renames
+plugin/v<old>/ to plugin/v<new>/ (with git mv), pointing the manifest's entry
+points at it.
+
+The rename is what makes the new QML take effect right after `omarchy plugin
+update`: until it restarts, the shell reuses whatever it compiled from a path
+it loaded before (omacom/omarchy#6981), and a new folder has no such past.
+
+Nothing is committed or tagged; review the result, then commit and tag.
+"""
+
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from omaprofile.update import version_key  # noqa: E402
+
+
+def fail(message: str) -> None:
+    print(f"release: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def main(argv: list[str]) -> None:
+    if len(argv) != 1 or argv[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        sys.exit(0 if argv and argv[0] in ("-h", "--help") else 2)
+    new = argv[0].removeprefix("v")
+    if not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+.][0-9A-Za-z.]+)?", new):
+        fail(f"not a version: {new}")
+
+    manifest_file = ROOT / "manifest.json"
+    manifest = json.loads(manifest_file.read_text())
+    old = str(manifest["version"])
+    if version_key(new) <= version_key(old):
+        fail(f"{new} is not newer than {old}")
+    old_dir, new_dir = ROOT / "plugin" / f"v{old}", ROOT / "plugin" / f"v{new}"
+    if not old_dir.is_dir():
+        fail(f"{old_dir.relative_to(ROOT)} is missing: the QML folder must match the version")
+    if new_dir.exists():
+        fail(f"{new_dir.relative_to(ROOT)} exists already")
+
+    changelog_file = ROOT / "CHANGELOG.md"
+    changelog = changelog_file.read_text()
+    unreleased = re.search(r"^## Unreleased[ \t]*\n(.*?)(?=^## |\Z)", changelog, re.M | re.S)
+    if not unreleased or not re.search(r"^\s*[-*] \S", unreleased.group(1), re.M):
+        fail("write what changed under '## Unreleased' in CHANGELOG.md first; "
+             "omaprofile update and the 'installed' notification show it")
+    changelog = changelog[:unreleased.start()] + f"## {new}\n" + changelog[unreleased.start(1):]
+
+    pyproject_file = ROOT / "pyproject.toml"
+    pyproject, n = re.subn(r'^version = "[^"]*"', f'version = "{new}"', pyproject_file.read_text(), count=1, flags=re.M)
+    if n != 1:
+        fail("pyproject.toml has no version line")
+    init_file = ROOT / "omaprofile" / "__init__.py"
+    init, n = re.subn(r'^__version__ = "[^"]*"', f'__version__ = "{new}"', init_file.read_text(), count=1, flags=re.M)
+    if n != 1:
+        fail("omaprofile/__init__.py has no __version__ line")
+
+    prefix_old, prefix_new = f"plugin/v{old}/", f"plugin/v{new}/"
+    entries = manifest.get("entryPoints", {})
+    stray = [v for v in entries.values() if not str(v).startswith(prefix_old)]
+    if stray:
+        fail(f"entry points outside {prefix_old}: {', '.join(map(str, stray))}")
+    manifest["version"] = new
+    manifest["entryPoints"] = {k: prefix_new + str(v)[len(prefix_old):] for k, v in entries.items()}
+
+    # Checked everything; now change it.
+    tracked = subprocess.run(["git", "-C", str(ROOT), "ls-files", "--error-unmatch", str(old_dir)],
+                             capture_output=True).returncode == 0
+    if tracked:
+        subprocess.run(["git", "-C", str(ROOT), "mv", str(old_dir), str(new_dir)], check=True)
+    else:
+        old_dir.rename(new_dir)
+    manifest_file.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+    pyproject_file.write_text(pyproject)
+    init_file.write_text(init)
+    changelog_file.write_text(changelog)
+
+    print(f"omaprofile {old} → {new}")
+    print(f"  plugin/v{old}/ → plugin/v{new}/, manifest.json, pyproject.toml, __init__.py, CHANGELOG.md")
+    print(f"Next: python3 -m unittest discover -s tests, then commit \"omaprofile {new}\" and tag v{new}.")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
