@@ -12,8 +12,7 @@ scripts can call the generic `omaprofile pick`.
 
 ## Requirements
 - [Omarchy](https://omarchy.org) with shell plugins (`omarchy-shell`,
-  `omarchy plugin`); tested on 4.5. The web app keybindings also use the Lua
-  Hyprland config (`~/.config/hypr/hyprland.lua`).
+  `omarchy plugin`); tested on 4.5.
 - Chromium, Omarchy's default browser. Other Chromium-family browsers work
   with `browser.command` and `browser.configDir` set (see Config).
 - Python 3.11+ (Omarchy ships it). No other dependencies.
@@ -33,12 +32,10 @@ pick **Set it up**. **Not now** asks again the next time the shell starts,
 - writes `~/.config/omaprofile/config.json` with the defaults, unless one exists;
 - writes `~/.local/share/applications/omaprofile.desktop` and makes it the
   default browser, after recording the current link handlers;
-- points the web app launchers in `~/.local/share/applications/` at omaprofile;
-- copies `hypr/omaprofile.lua` to `~/.config/hypr/` and adds
-  `require("hypr.omaprofile")` to `~/.config/hypr/hyprland.lua`, just before
-  `require("default.hypr.omarchy")`. If that line is not there, it says what
-  to add by hand. Hyprland is reloaded so the web app keybindings use the
-  picker right away.
+- writes `~/.local/share/applications/chromium.desktop`, a copy of
+  Chromium's entry that sends Omarchy web apps through the picker (see
+  [How it plugs in](#how-it-plugs-in)). A `chromium.desktop` you had there is
+  kept and put back on uninstall.
 
 Last, the overlay asks whether each profile should get its own theme (No is
 the default); see [A theme per profile](#a-theme-per-profile).
@@ -51,10 +48,11 @@ profiles yet, so links open in plain Chromium until it has made one.
 omarchy plugin update dry.omaprofile
 ```
 The update pulls the overlay and the CLI together (the CLI runs from the
-clone); when the shell reloads the overlay it also refreshes the Hyprland hook
-and `~/.local/bin/omaprofile` if they changed. Run `omaprofile install` after
-`omarchy webapp install` adds a web app, so the new one goes through the
-picker too.
+clone); when the shell reloads the overlay it also refreshes
+`~/.local/bin/omaprofile` and `chromium.desktop` if they changed. Updating
+from 0.2.x puts the web app launchers it rewrote back to Omarchy's form and
+removes its `require("hypr.omaprofile")` line and hook file from
+`~/.config/hypr/`.
 
 ### A theme per profile
 Omarchy's Chromium theme is a mandatory policy, so every profile looks the
@@ -79,9 +77,8 @@ asks whether to undo omaprofile's changes (j/k or arrows, Enter; run from a
 copy of the CLI that install keeps in `~/.local/share/omaprofile/cleanup/`).
 **Undo its changes**
 restores the link handlers recorded at install
-(Omarchy's own `omarchy-browser.desktop` routing included), points the web
-apps back at `omarchy-launch-webapp`, removes the `require` line, the hook and
-`~/.local/bin/omaprofile`, and makes Omarchy's theme policy mandatory again if
+(Omarchy's own `omarchy-browser.desktop` routing included), removes
+omaprofile's `chromium.desktop` and `~/.local/bin/omaprofile`, and makes Omarchy's theme policy mandatory again if
 omaprofile changed it; the config stays. **Leave them for now** (or Esc)
 changes nothing: links open in the browser directly, and the next link after
 the next login asks again. The same goes if the shell was not running to see
@@ -120,9 +117,6 @@ exists is skipped with a notification and the picker is shown instead.
 - `manifest.json` — the `dry.omaprofile` plugin manifest, at the root so
   `omarchy plugin add` can install the repository as is.
 - `plugin/Omaprofile.qml` — the picker overlay.
-- `hypr/omaprofile.lua` — Hyprland hook that routes Omarchy's web app
-  keybindings through `omaprofile webapp open`; installed to
-  `~/.config/hypr/omaprofile.lua`.
 - `tests/` — `python3 -m unittest discover -s tests`.
 - Config: `~/.config/omaprofile/config.json`.
 - Cleanup copy: `~/.local/share/omaprofile/cleanup/`, the CLI kept outside
@@ -140,6 +134,8 @@ omaprofile browser open [flags...] [url]     pick a profile, open the link
 omaprofile browser launch <profile> [args]   open as a profile, no picker
 omaprofile browser profiles                  list profiles
 omaprofile webapp open <url> [flags...]      pick a profile, open as a web app
+omaprofile chromium [args...]                Omarchy's chromium.desktop: --app=URL picks
+                                             a profile, anything else starts Chromium
 omaprofile extensions [sync]                 pick a profile (or all), sync extensions
 omaprofile extensions sync all|<profile>     sync from the first profile, no picker
 omaprofile extensions list                   first profile's extensions vs the others
@@ -149,7 +145,7 @@ omaprofile contexts                          list configured contexts
 omaprofile pick [--title T] [--subtitle S] CHOICE...
                                              generic picker; prints chosen id
                                              CHOICE = id|label|color|glyph|detail
-omaprofile install                           plugin, default browser, web app hook
+omaprofile install                           plugin, default browser, web app route
 omaprofile install --auto                    the overlay's call: ask to install if needed
 omaprofile uninstall [fallback.desktop]      undo install, restore the previous browser
 omaprofile policy [recommend|restore]        Omarchy's Chromium theme policy: show,
@@ -216,18 +212,18 @@ For scripts and tests: `omarchy-shell shell call dry.omaprofile choose <index>`.
   that as `browser open`.
 - Launched apps run via `setsid uwsm-app --` with stdio on `/dev/null`;
   context commands go through `bash -c`.
-- Web apps go through `omaprofile webapp open <url>`, which runs Chromium's
-  `--app=<url>` in the chosen profile. Two hooks make that happen:
-  `omaprofile install` rewrites the `Exec=omarchy-launch-webapp` line of every
-  web app desktop file in `~/.local/share/applications/`, and
-  `~/.config/hypr/hyprland.lua` loads `require("hypr.omaprofile")` before
-  `require("default.hypr.omarchy")`, which redefines `o.launch_webapp` and
-  `o.launch_webapp_sole` so the preinstalled keybindings use omaprofile too.
-  If a future Omarchy renames those helpers the hook does nothing rather
-  than breaking the Hyprland config.
-  Re-run `omaprofile install` after `omarchy webapp install` adds a new app.
-  `omaprofile uninstall` restores the Exec lines and removes both the
-  `require` line and the hook file.
+- Web apps: Omarchy starts every web app (launchers, keybindings, and
+  launch-or-focus) with `omarchy-launch-webapp`. With a default browser it
+  does not know, omaprofile among them, that runs the first word of
+  `chromium.desktop`'s Exec with `--app=<url>`, and looks in
+  `~/.local/share/applications/` first. omaprofile's `chromium.desktop` there
+  is Chromium's own entry with that first word replaced by
+  `~/.local/bin/omaprofile chromium`: `--app=<url>` picks a profile and opens
+  the web app in it, anything else (the Chromium menu entry, or Chromium as
+  the handler of a file type) starts Chromium unchanged, and New Window and
+  New Incognito Window still start Chromium directly. Web apps you add later
+  need nothing extra, and no launcher or Hyprland file is edited.
+  `omaprofile uninstall` removes that entry.
   Browser rules apply to web apps as well, so a `host` rule fixes an app to
   a profile without the picker.
 - Round trip with the overlay is file based like `omarchy.image-picker`:

@@ -9,7 +9,30 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from omaprofile import cli, config as cfgmod, install as inst, policy
+# Every test runs in a throwaway home. omaprofile's paths are computed from
+# these at import time, so a test that forgets to redirect one still lands
+# here, never in the real ~/.config, ~/.local or the running desktop.
+SANDBOX = Path(tempfile.mkdtemp(prefix="omaprofile-test-home."))
+os.environ.update({
+    "HOME": str(SANDBOX),
+    "XDG_CONFIG_HOME": str(SANDBOX / ".config"),
+    "XDG_DATA_HOME": str(SANDBOX / ".local" / "share"),
+    "XDG_STATE_HOME": str(SANDBOX / ".local" / "state"),
+    "XDG_CACHE_HOME": str(SANDBOX / ".cache"),
+    "XDG_RUNTIME_DIR": str(SANDBOX / "run"),  # no omarchy-shell IPC socket here
+    "DBUS_SESSION_BUS_ADDRESS": "unix:path=" + str(SANDBOX / "no-bus"),
+})
+for name in ("HYPRLAND_INSTANCE_SIGNATURE", "WAYLAND_DISPLAY"):  # no hyprctl reload of the real session
+    os.environ.pop(name, None)
+(SANDBOX / "run").mkdir(mode=0o700)
+unittest.addModuleCleanup(shutil.rmtree, SANDBOX, ignore_errors=True)
+
+from omaprofile import cli, config as cfgmod, install as inst, policy  # noqa: E402
+
+for _path in (cfgmod.HOME, cfgmod.CONFIG_FILE, cfgmod.DESKTOP_FILE, cfgmod.BIN_LINK, cfgmod.HYPR_DIR,
+              cfgmod.STATE_FILE, cfgmod.PLUGIN_DIR, inst.HYPRLAND_LUA, inst.HYPR_HOOK, inst.CHROMIUM_BACKUP,
+              inst.CLEANUP_DIR, inst.DECLINED_FILE, policy.MOVED_MARKER):
+    assert SANDBOX in _path.parents or _path == SANDBOX, f"test path escapes the sandbox: {_path}"
 
 
 def setUpModule():
@@ -21,11 +44,42 @@ def setUpModule():
                     mock.patch.object(cli, "CLEANUP_DIR", Path(tmp.name) / "cleanup"),
                     mock.patch.object(cli, "CLEANUP_LOCK", Path(tmp.name) / "cleanup.lock"),
                     mock.patch.object(policy, "MOVED_MARKER", Path(tmp.name) / "policy-moved"),
+                    mock.patch.object(inst, "CHROMIUM_BACKUP", Path(tmp.name) / "chromium.desktop.orig"),
+                    # Chromium's own entry comes from here, not /usr/share.
+                    mock.patch.dict("os.environ", {"XDG_DATA_DIRS": str(Path(tmp.name) / "system")}),
                     # No test may reach the real /etc policy folders.
                     mock.patch.dict("os.environ", {"OMAPROFILE_POLICY_ROOTS": str(Path(tmp.name) / "none")})):
         patcher.start()
         unittest.addModuleCleanup(patcher.stop)
+    system = Path(tmp.name) / "system" / "applications"
+    system.mkdir(parents=True)
+    (system / "chromium.desktop").write_text(SYSTEM_CHROMIUM)
     unittest.addModuleCleanup(tmp.cleanup)
+
+
+SYSTEM_CHROMIUM = """[Desktop Entry]
+Version=1.0
+Name=Chromium
+Exec=/usr/bin/chromium %U
+Icon=chromium
+Actions=new-window;new-private-window;
+
+[Desktop Action new-window]
+Name=New Window
+Exec=/usr/bin/chromium
+
+[Desktop Action new-private-window]
+Name=New Incognito Window
+Exec=/usr/bin/chromium --incognito
+"""
+
+
+def launch_webapp_command(entry: Path) -> str:
+    """What omarchy-launch-webapp runs: chromium.desktop's first Exec, up to the first space."""
+    for line in entry.read_text().splitlines():
+        if line.startswith("Exec="):
+            return line[len("Exec="):].split(" ", 1)[0]
+    return ""
 from omaprofile.browser import (
     NO_PROFILE,
     Browser,
@@ -577,20 +631,94 @@ class InstallFixtureCase(unittest.TestCase):
             self.addCleanup(patcher.stop)
 
 
-class WebappRewriteTests(InstallFixtureCase):
-    def test_round_trip_and_moved_checkout(self):
+class ChromiumOverrideTests(InstallFixtureCase):
+    def override(self) -> Path:
+        return self.apps / "chromium.desktop"
+
+    def test_web_apps_reach_omaprofile_and_the_rest_stays_chromium(self):
+        self.assertTrue(inst.write_chromium_override())
+        entry = self.override().read_text()
+        self.assertEqual(launch_webapp_command(self.override()), "/home/me/.local/bin/omaprofile")
+        self.assertIn("Exec=/home/me/.local/bin/omaprofile chromium %U\n", entry)
+        # New Window and Incognito keep starting Chromium itself.
+        self.assertIn("Exec=/usr/bin/chromium\n", entry)
+        self.assertIn("Exec=/usr/bin/chromium --incognito\n", entry)
+        self.assertIn("Name=Chromium\n", entry)
+        self.assertFalse(inst.write_chromium_override())  # unchanged
+        inst.remove_chromium_override()
+        self.assertFalse(self.override().exists())
+
+    def test_a_chromium_entry_the_user_had_is_kept_and_restored(self):
+        mine = SYSTEM_CHROMIUM.replace("Exec=/usr/bin/chromium %U", "Exec=chromium --ozone-platform=x11 %U")
+        self.override().write_text(mine)
+        inst.write_chromium_override()
+        self.assertIn("Exec=/home/me/.local/bin/omaprofile chromium --ozone-platform=x11 %U\n",
+                      self.override().read_text())
+        inst.write_chromium_override()  # a refresh keeps the user's copy, not ours
+        self.assertEqual(inst.CHROMIUM_BACKUP.read_text(), mine)
+        inst.remove_chromium_override()
+        self.assertEqual(self.override().read_text(), mine)
+        self.assertFalse(inst.CHROMIUM_BACKUP.exists())
+
+    def test_without_chromium_installed_a_hidden_entry_still_routes_web_apps(self):
+        with mock.patch.dict("os.environ", {"XDG_DATA_DIRS": str(self.root / "nothing")}):
+            inst.write_chromium_override()
+        self.assertIn("NoDisplay=true", self.override().read_text())
+        self.assertEqual(launch_webapp_command(self.override()), "/home/me/.local/bin/omaprofile")
+
+
+class LegacyRoutingTests(InstallFixtureCase):
+    """0.2.x rewrote each web app launcher and added a Hyprland hook; both come back out."""
+
+    STOCK = (
+        'dofile("bootstrap.lua")\n'
+        "\n"
+        "-- Load Omarchy defaults.\n"
+        'require("default.hypr.omarchy")\n'
+        "\n"
+        'require("hypr.bindings")\n'
+    )
+    OLD = STOCK.replace("-- Load Omarchy defaults.", (
+        "-- omaprofile: route web app bindings through the profile picker. Must come\n"
+        "-- before the defaults so their web app bindings pick up the override.\n"
+        'require("hypr.omaprofile")\n'
+        "\n"
+        "-- Load Omarchy defaults."))
+
+    def test_launchers_hook_and_require_line_are_removed(self):
         app = self.apps / "X.desktop"
-        original = "[Desktop Entry]\nName=X\nExec=omarchy-launch-webapp https://x.com/\n"
-        app.write_text(original)
-        self.assertEqual(inst.rewrite_webapps(True), [app])
-        self.assertIn("Exec=/home/me/.local/bin/omaprofile webapp open https://x.com/", app.read_text())
-        self.assertEqual(inst.rewrite_webapps(True), [])  # idempotent
-        inst.rewrite_webapps(False)
-        self.assertEqual(app.read_text(), original)
-        # An entry left by a checkout at another path is still recognised.
-        app.write_text("Exec=/old/place/bin/omaprofile webapp open https://x.com/\n")
-        inst.rewrite_webapps(False)
-        self.assertEqual(app.read_text(), "Exec=omarchy-launch-webapp https://x.com/\n")
+        app.write_text("[Desktop Entry]\nName=X\nExec=/home/me/.local/bin/omaprofile webapp open https://x.com/\n")
+        moved = self.apps / "Y.desktop"  # a launcher from a checkout that has since moved
+        moved.write_text('Exec="/old/my place/bin/omaprofile" webapp open "https://y.com/"\n')
+        inst.HYPRLAND_LUA.write_text(self.OLD)
+        inst.HYPR_HOOK.write_text("-- old hook\n")
+        with mock.patch.object(inst, "reload_hyprland") as reload:
+            self.assertTrue(inst.remove_legacy_routing())
+        reload.assert_called_once()
+        self.assertEqual(app.read_text(), "[Desktop Entry]\nName=X\nExec=omarchy-launch-webapp https://x.com/\n")
+        self.assertEqual(moved.read_text(), 'Exec=omarchy-launch-webapp "https://y.com/"\n')
+        self.assertEqual(inst.HYPRLAND_LUA.read_text(), self.STOCK)
+        self.assertFalse(inst.HYPR_HOOK.exists())
+        with mock.patch.object(inst, "reload_hyprland") as reload:
+            self.assertFalse(inst.remove_legacy_routing())  # nothing left: no reload either
+        reload.assert_not_called()
+
+
+class ChromiumCommandTests(unittest.TestCase):
+    """`omaprofile chromium`: what Omarchy runs from omaprofile's chromium.desktop."""
+
+    def test_web_app_launch_opens_the_picker(self):
+        for argv in (["--app=https://x.com/"], ["chromium", "--app=https://x.com/"]):
+            with mock.patch("omaprofile.cli.Browser") as browser:
+                cli.dispatch([*argv, "--new-window"])
+            browser.return_value.open_webapp.assert_called_once_with("https://x.com/", ["--new-window"])
+
+    def test_anything_else_is_plain_chromium(self):
+        with mock.patch("omaprofile.cli.shutil.which", return_value="/usr/bin/chromium"), \
+             mock.patch("omaprofile.cli.os.execv") as execv, mock.patch("omaprofile.cli.Browser") as browser:
+            cli.dispatch(["chromium", "mailto:me@example.com"])
+        execv.assert_called_once_with("/usr/bin/chromium", ["chromium", "mailto:me@example.com"])
+        browser.assert_not_called()
 
 
 class DesktopEntryTargetTests(InstallFixtureCase):
@@ -603,34 +731,8 @@ class DesktopEntryTargetTests(InstallFixtureCase):
             entry = cfgmod.DESKTOP_FILE.read_text()
         self.assertIn("Exec=/home/me/.local/bin/omaprofile browser open %U", entry)
         self.assertNotIn("My Code", entry)
-        self.assertNotIn("My Code", inst.omaprofile_webapp_exec())
-
-
-class HyprRequireTests(InstallFixtureCase):
-    STOCK = (
-        'dofile("bootstrap.lua")\n'
-        "\n"
-        "-- Load Omarchy defaults.\n"
-        'require("default.hypr.omarchy")\n'
-        "\n"
-        'require("hypr.bindings")\n'
-    )
-
-    def test_added_before_defaults_and_removed_cleanly(self):
-        lua = inst.HYPRLAND_LUA
-        lua.write_text(self.STOCK)
-        self.assertEqual(inst.add_hypr_require(), "added")
-        text = lua.read_text()
-        self.assertLess(text.index('require("hypr.omaprofile")'), text.index("-- Load Omarchy defaults."))
-        self.assertEqual(inst.add_hypr_require(), "present")
-        self.assertTrue(inst.remove_hypr_require())
-        self.assertEqual(lua.read_text(), self.STOCK)
-
-    def test_unknown_layout_asks_for_a_manual_edit(self):
-        inst.HYPRLAND_LUA.write_text("-- custom\n")
-        self.assertEqual(inst.add_hypr_require(), "manual")
-        inst.HYPRLAND_LUA.unlink()
-        self.assertEqual(inst.add_hypr_require(), "manual")
+        inst.write_chromium_override()
+        self.assertEqual(launch_webapp_command(self.apps / "chromium.desktop"), "/home/me/.local/bin/omaprofile")
 
 
 class HandlerRestoreTests(InstallFixtureCase):
@@ -779,7 +881,7 @@ class PluginModeTests(unittest.TestCase):
         self.plugins.mkdir(parents=True)
         (self.plugins / "manifest.json").write_text("{}")
         with mock.patch.object(inst, "SRC_ROOT", self.plugins), \
-             mock.patch.object(inst, "unregister"), mock.patch.object(inst, "rewrite_webapps"), \
+             mock.patch.object(inst, "unregister"), mock.patch.object(inst, "remove_legacy_routing"), mock.patch.object(inst, "remove_chromium_override"), \
              mock.patch.object(inst, "remove_hypr_require"), mock.patch.object(inst, "reload_hyprland"), \
              mock.patch.object(inst, "HYPR_HOOK", self.root / "hook.lua"), \
              mock.patch.object(cfgmod, "STATE_FILE", self.root / "state.json"), \
@@ -887,18 +989,19 @@ class AutoInstallTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
         self.plugin = self.root / ".config" / "omarchy" / "plugins" / "dry.omaprofile"
-        (self.plugin / "hypr").mkdir(parents=True)
-        (self.plugin / "hypr" / "omaprofile.lua").write_text("-- new hook\n")
         self.launcher = self.plugin / "bin" / "omaprofile"
-        self.launcher.parent.mkdir()
+        self.launcher.parent.mkdir(parents=True)
         self.launcher.write_text("")
         self.state = self.root / "state" / "install.json"
         self.link = self.root / "bin" / "omaprofile"
         self.hook = self.root / "hypr" / "omaprofile.lua"
+        self.apps = self.root / "share" / "applications"
         self.reload = mock.MagicMock()
         for patcher in (mock.patch.object(inst, "SRC_ROOT", self.plugin),
                         mock.patch.object(inst, "LAUNCHER", self.launcher),
                         mock.patch.object(inst, "HYPR_HOOK", self.hook),
+                        mock.patch.object(inst, "HYPRLAND_LUA", self.root / "hypr" / "hyprland.lua"),
+                        mock.patch.object(cfgmod, "DESKTOP_FILE", self.apps / cfgmod.DESKTOP_ID),
                         mock.patch.object(inst, "reload_hyprland", self.reload),
                         mock.patch.object(inst, "repo_url", return_value=""),
                         mock.patch.object(cfgmod, "PLUGIN_DIR", self.plugin),
@@ -921,18 +1024,26 @@ class AutoInstallTests(unittest.TestCase):
             self.assertEqual(inst.setup_state(), "")
 
     def test_installed_already_leaves_links_alone_and_refreshes_our_files(self):
+        """An update from 0.2.x moves the install over to the chromium.desktop route."""
         self.state.parent.mkdir()
         self.state.write_text("{}")
         inst.write_shim()
         self.hook.parent.mkdir()
         self.hook.write_text("-- old hook\n")
-        with mock.patch.object(inst, "install") as install, mock.patch.object(inst, "shim_text", return_value="#!/bin/sh\n" + inst.SHIM_MARK + "\ntarget=" + str(self.launcher) + "\n# new\n"):
+        self.apps.mkdir(parents=True)
+        app = self.apps / "X.desktop"
+        app.write_text(f"Exec={self.link} webapp open https://x.com/\n")
+        with mock.patch.object(inst, "install") as install, \
+             mock.patch("omaprofile.install.subprocess.run"), \
+             mock.patch.object(inst, "shim_text", return_value="#!/bin/sh\n" + inst.SHIM_MARK + "\ntarget=" + str(self.launcher) + "\n# new\n"):
             self.assertEqual(inst.setup_state(), "")
             self.assertFalse(inst.refresh())  # nothing left to do
         install.assert_not_called()
         self.assertIn("# new", self.link.read_text())
-        self.assertEqual(self.hook.read_text(), "-- new hook\n")
-        self.reload.assert_called_once()
+        self.assertFalse(self.hook.exists())
+        self.reload.assert_called_once()  # drops the old hook's bindings
+        self.assertEqual(app.read_text(), "Exec=omarchy-launch-webapp https://x.com/\n")
+        self.assertEqual(launch_webapp_command(self.apps / "chromium.desktop"), str(self.link))
 
     def test_refresh_leaves_another_checkouts_launcher_and_a_removed_hook(self):
         self.state.parent.mkdir()
@@ -959,7 +1070,7 @@ class AutoInstallTests(unittest.TestCase):
         declined = self.root / "state" / "setup-declined"
         with mock.patch.object(inst, "DECLINED_FILE", declined):
             inst.decline_setup()
-            with mock.patch.object(inst, "unregister"), mock.patch.object(inst, "rewrite_webapps"), \
+            with mock.patch.object(inst, "unregister"), mock.patch.object(inst, "remove_legacy_routing"), mock.patch.object(inst, "remove_chromium_override"), \
                  mock.patch.object(inst, "remove_hypr_require"), mock.patch("omaprofile.install.subprocess.run"):
                 inst.uninstall()
             self.assertFalse(declined.exists())
@@ -1193,7 +1304,7 @@ class RemovedPluginTests(unittest.TestCase):
 
     def test_removed_uninstall_skips_plugin_disable_and_delete(self):
         (self.plugin / "manifest.json").unlink()
-        with mock.patch.object(inst, "unregister"), mock.patch.object(inst, "rewrite_webapps"), \
+        with mock.patch.object(inst, "unregister"), mock.patch.object(inst, "remove_legacy_routing"), mock.patch.object(inst, "remove_chromium_override"), \
              mock.patch.object(inst, "remove_hypr_require"), mock.patch.object(inst, "reload_hyprland"), \
              mock.patch.object(inst, "remove_plugin_copy") as remove_copy, \
              mock.patch.object(inst, "HYPR_HOOK", self.root / "hook.lua"), \
@@ -1277,8 +1388,8 @@ class RemovalWatchTests(unittest.TestCase):
 class InstallOrderTests(unittest.TestCase):
     def test_plugin_is_enabled_after_links_point_at_omaprofile(self):
         order = []
-        names = ("write_shim", "copy_plugin", "save_handlers", "register", "rewrite_webapps",
-                 "add_hypr_require", "reload_hyprland", "enable_plugin")
+        names = ("write_shim", "copy_plugin", "save_handlers", "write_chromium_override", "register",
+                 "remove_legacy_routing", "enable_plugin")
         patches = [mock.patch.object(inst, n, side_effect=lambda *a, n=n, **k: order.append(n) or ("" if n == "enable_plugin" else None))
                    for n in names]
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(inst, "HYPR_HOOK", Path(tmp) / "hook.lua"), \
@@ -1293,6 +1404,8 @@ class InstallOrderTests(unittest.TestCase):
                 for p in patches:
                     p.stop()
         self.assertLess(order.index("register"), order.index("enable_plugin"))
+        # The web app route is in place before omaprofile becomes the default browser.
+        self.assertLess(order.index("write_chromium_override"), order.index("register"))
         self.assertEqual(order[-1], "enable_plugin")
 
     def test_uninstall_disables_the_overlay_before_restoring_links(self):
@@ -1301,7 +1414,7 @@ class InstallOrderTests(unittest.TestCase):
              mock.patch.object(inst, "unregister", side_effect=lambda *a: order.append("unregister")), \
              mock.patch("omaprofile.install.subprocess.run",
                         side_effect=lambda argv, **k: order.append(" ".join(argv[:3]))), \
-             mock.patch.object(inst, "rewrite_webapps"), mock.patch.object(inst, "remove_hypr_require"), \
+             mock.patch.object(inst, "remove_legacy_routing"), mock.patch.object(inst, "remove_chromium_override"), mock.patch.object(inst, "remove_hypr_require"), \
              mock.patch.object(inst, "reload_hyprland"), mock.patch.object(inst, "remove_shim"), \
              mock.patch.object(inst, "remove_plugin_copy"), mock.patch.object(inst, "HYPR_HOOK", Path(tmp) / "h.lua"), \
              mock.patch.object(cfgmod, "STATE_FILE", Path(tmp) / "install.json"):
