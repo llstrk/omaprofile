@@ -115,6 +115,22 @@ notification. Run the same command in a terminal to see the message there,
 e.g. `omaprofile https://example.com`. A rule whose profile no longer
 exists is skipped with a notification and the picker is shown instead.
 
+## Releasing
+Write what changed under `## Unreleased` at the top of `CHANGELOG.md`, then:
+```sh
+bin/release 0.4.0
+python3 -m unittest discover -s tests
+git commit -am "omaprofile 0.4.0" && git tag v0.4.0
+```
+`bin/release` sets the version in `manifest.json`, `pyproject.toml` and
+`omaprofile/__init__.py`, turns `## Unreleased` into `## 0.4.0`,
+and renames `plugin/v0.3.0/` to `plugin/v0.4.0/`. The rename matters: until it
+restarts, the shell reuses what it compiled from a QML path it loaded before,
+even after `omarchy plugin update` reloads the plugin
+([omacom/omarchy#6981](https://github.com/omacom/omarchy/issues/6981)). From a
+new folder the new picker and bar icon load right away. Between releases, edits
+to the QML need `omarchy restart shell` (in a nest) to show.
+
 ## Layout
 - `bin/omaprofile` — launcher; `~/.local/bin/omaprofile` is a script that
   runs it, falling back to the browser if it is gone.
@@ -125,11 +141,10 @@ exists is skipped with a notification and the picker is shown instead.
   `install.py` deployment, `policy.py` Omarchy's Chromium policy.
 - `manifest.json` — the `dry.omaprofile` plugin manifest, at the root so
   `omarchy plugin add` can install the repository as is.
-- `plugin/overlay/Omaprofile.qml` — the picker overlay.
-- `plugin/bar/UpdateIcon.qml` — the bar icon shown while an update is out.
-- Until it restarts, the shell keeps what it compiled from a QML path, even
-  across `omarchy plugin update`; a path it never loaded is read fresh. So a
-  release whose QML must take effect right away moves the file.
+- `plugin/v<version>/` — the QML: `Omaprofile.qml`, the picker overlay, and
+  `UpdateIcon.qml`, the bar icon shown while an update is out. The folder is
+  renamed every release (see [Releasing](#releasing)).
+- `bin/release` — prepares a release.
 - `CHANGELOG.md` — what each version changed; `omaprofile update` and the
   "installed" notification show the new entries.
 - `tests/` — `python3 -m unittest discover -s tests` runs everything,

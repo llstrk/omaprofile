@@ -3,6 +3,8 @@ import os
 import json
 import re
 import shutil
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -82,6 +84,12 @@ from omaprofile.browser import (
 )
 from omaprofile.contexts import Context, ContextError
 from omaprofile.picker import Choice
+
+REPO = Path(__file__).resolve().parent.parent
+
+
+def overlay_qml() -> Path:
+    return REPO / json.loads((REPO / "manifest.json").read_text())["entryPoints"]["overlay"]
 
 CFG = {
     "browser": {"command": "chromium", "rules": [
@@ -842,16 +850,21 @@ class PluginModeTests(unittest.TestCase):
         (self.plugins / "Omaprofile.qml").write_text("old")
         (self.plugins / "plugin").mkdir()
         (self.plugins / "plugin" / "Omaprofile.qml").write_text("0.2.0")
+        stale = self.plugins / "plugin" / "v0.0.1"  # an earlier copy's version folder
+        stale.mkdir()
+        (stale / "Omaprofile.qml").write_text("0.0.1")
         with mock.patch.object(inst, "SRC_ROOT", self.repo):
             self.assertFalse(inst.managed_by_omarchy())
             inst.copy_plugin()
         self.assertTrue((self.plugins / "manifest.json").is_file())
-        self.assertTrue((self.plugins / "plugin" / "overlay" / "Omaprofile.qml").is_file())
-        self.assertTrue((self.plugins / "plugin" / "bar" / "UpdateIcon.qml").is_file())
+        version = json.loads((self.repo / "manifest.json").read_text())["version"]
+        self.assertTrue((self.plugins / "plugin" / f"v{version}" / "Omaprofile.qml").is_file())
+        self.assertTrue((self.plugins / "plugin" / f"v{version}" / "UpdateIcon.qml").is_file())
+        self.assertFalse(stale.exists())
         self.assertFalse((self.plugins / "Omaprofile.qml").exists())
         self.assertFalse((self.plugins / "plugin" / "Omaprofile.qml").exists())
         manifest = json.loads((self.plugins / "manifest.json").read_text())
-        self.assertEqual(manifest["entryPoints"]["overlay"], "plugin/overlay/Omaprofile.qml")
+        self.assertEqual(manifest["entryPoints"]["overlay"], f"plugin/v{version}/Omaprofile.qml")
         inst.remove_plugin_copy()
         self.assertFalse(self.plugins.exists())
 
@@ -1065,7 +1078,7 @@ class AutoInstallTests(unittest.TestCase):
             self.assertFalse(declined.exists())
 
     def test_overlay_runs_it_from_its_own_folder(self):
-        qml = (Path(__file__).resolve().parent.parent / "plugin" / "overlay" / "Omaprofile.qml").read_text()
+        qml = overlay_qml().read_text()
         self.assertIn('exec "$1" install --auto', qml)
         self.assertIn('dir + "/bin/omaprofile"', qml)
 
@@ -1332,7 +1345,7 @@ class RemovalWatchTests(unittest.TestCase):
     """The overlay's watch when it unloads, run as the overlay runs it."""
 
     def setUp(self):
-        qml = (Path(__file__).resolve().parent.parent / "plugin" / "overlay" / "Omaprofile.qml").read_text()
+        qml = overlay_qml().read_text()
         block = qml[qml.index("removalWatchScript: ["):]
         block = block[:block.index('].join("\\n")')]
         # Each line is a single-quoted JS string; undo its escapes as QML does.
@@ -1452,3 +1465,74 @@ class PluginRecordTests(InstallFixtureCase):
         self.write({"plugins": [{"id": "dry.lock"}, {"id": inst.PLUGIN_ID}]})
         inst.drop_plugin_record()
         self.assertEqual(json.loads(self.shell.read_text())["plugins"], [{"id": "dry.lock"}])
+
+
+class QmlLayoutTests(unittest.TestCase):
+    """The QML sits in plugin/v<version>/: a running shell loads a new version's QML only from a new path."""
+
+    def test_entry_points_are_in_the_folder_of_this_version(self):
+        manifest = json.loads((REPO / "manifest.json").read_text())
+        folder = f"plugin/v{manifest['version']}/"
+        for kind, entry in manifest["entryPoints"].items():
+            self.assertTrue(entry.startswith(folder), f"{kind}: {entry} is not in {folder}; use bin/release")
+            self.assertTrue((REPO / entry).is_file(), entry)
+        self.assertEqual([p.name for p in (REPO / "plugin").iterdir()], [f"v{manifest['version']}"])
+
+
+class ReleaseScriptTests(unittest.TestCase):
+    """bin/release on a copy of the repository."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.repo = Path(tmp.name) / "repo"
+        files = subprocess.run(["git", "-C", str(REPO), "ls-files", "-co", "--exclude-standard"],
+                               capture_output=True, text=True, check=True).stdout.split()
+        for name in files:
+            if (REPO / name).is_file():
+                (self.repo / name).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(REPO / name, self.repo / name)
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+        for args in (["init", "-q"], ["add", "-A"],
+                     ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "base"]):
+            subprocess.run(["git", "-C", str(self.repo), *args], check=True, env=env, capture_output=True)
+        self.version = json.loads((self.repo / "manifest.json").read_text())["version"]
+
+    def release(self, version):
+        return subprocess.run([sys.executable, str(self.repo / "bin" / "release"), version],
+                              capture_output=True, text=True)
+
+    def add_unreleased(self, text="- Profiles can be pinned to a site.\n"):
+        changelog = self.repo / "CHANGELOG.md"
+        head, rest = changelog.read_text().split("\n## ", 1)
+        changelog.write_text(f"{head}\n## Unreleased\n{text}\n## {rest}")
+
+    def test_release_moves_the_qml_and_sets_every_version(self):
+        self.add_unreleased()
+        proc = self.release("9.0.0")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        manifest = json.loads((self.repo / "manifest.json").read_text())
+        self.assertEqual(manifest["version"], "9.0.0")
+        self.assertEqual(manifest["entryPoints"], {"overlay": "plugin/v9.0.0/Omaprofile.qml",
+                                                   "barWidget": "plugin/v9.0.0/UpdateIcon.qml"})
+        self.assertEqual(sorted(p.name for p in (self.repo / "plugin").iterdir()), ["v9.0.0"])
+        self.assertIn('version = "9.0.0"', (self.repo / "pyproject.toml").read_text())
+        self.assertIn('__version__ = "9.0.0"', (self.repo / "omaprofile" / "__init__.py").read_text())
+        changelog = (self.repo / "CHANGELOG.md").read_text()
+        self.assertIn("## 9.0.0\n- Profiles can be pinned to a site.\n", changelog)
+        self.assertNotIn("Unreleased", changelog)
+        status = subprocess.run(["git", "-C", str(self.repo), "status", "--porcelain"],
+                                capture_output=True, text=True).stdout
+        self.assertIn(f"R  plugin/v{self.version}/Omaprofile.qml -> plugin/v9.0.0/Omaprofile.qml", status)
+
+    def test_release_needs_changelog_entry_and_a_newer_version(self):
+        proc = self.release("9.0.0")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("Unreleased", proc.stderr)
+        self.add_unreleased("\n")  # a heading with nothing under it
+        self.assertEqual(self.release("9.0.0").returncode, 1)
+        self.add_unreleased()
+        proc = self.release(self.version)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("not newer", proc.stderr)
+        self.assertTrue((self.repo / "plugin" / f"v{self.version}").is_dir())  # nothing changed

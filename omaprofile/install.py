@@ -36,13 +36,22 @@ from .browser import Browser, current_handlers, desktop_exec_arg, register, unre
 
 SRC_ROOT = Path(__file__).resolve().parent.parent
 LAUNCHER = SRC_ROOT / "bin" / "omaprofile"
-# Relative to the repository root. A QML file keeps a path only while it stays
-# the same: until it restarts, the shell reuses what it compiled from a path and
-# the listing of a folder it loaded from, even across `omarchy plugin update`.
-# A path it has never loaded is read fresh, so a release that has to take effect
-# right away moves the file (0.3.0: from plugin/ into these folders).
-PLUGIN_FILES = ("manifest.json", "plugin/overlay/Omaprofile.qml", "plugin/bar/UpdateIcon.qml")
+# The QML lives in plugin/v<version>/, renamed by bin/release every release.
+# Until it restarts, the shell reuses what it compiled from a path, and the
+# listing of a folder it loaded from, even across `omarchy plugin update`
+# (omacom/omarchy#6981). A folder it has never loaded is read fresh, so a new
+# version's QML takes effect as soon as the update reloads the plugin.
 OLD_PLUGIN_FILES = ("Omaprofile.qml", "plugin/Omaprofile.qml")  # copied by 0.2.0 and earlier
+
+
+def plugin_files(root: Path | None = None) -> list[str]:
+    """What the plugin is made of, relative to the repository root: the manifest and its entry points."""
+    root = root or SRC_ROOT
+    try:
+        entries = json.loads((root / "manifest.json").read_text()).get("entryPoints", {})
+    except (OSError, ValueError):
+        entries = {}
+    return ["manifest.json", *sorted({str(v) for v in entries.values() if isinstance(v, str)})]
 # Omarchy starts every web app (launchers, keybindings, launch-or-focus) with
 # omarchy-launch-webapp. For a default browser it does not know, omaprofile
 # among them, that takes the browser command from chromium.desktop's Exec,
@@ -220,19 +229,40 @@ def copy_plugin() -> None:
     if (cfgmod.PLUGIN_DIR / ".git").exists():
         raise InstallError(f"{cfgmod.PLUGIN_DIR} is a git clone (omarchy plugin add); run install from it: "
                            f"{cfgmod.PLUGIN_DIR / 'bin' / 'omaprofile'} install")
-    for name in PLUGIN_FILES:
+    files = plugin_files()
+    for name in files:
         target = cfgmod.PLUGIN_DIR / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(SRC_ROOT / name, target)
     for name in OLD_PLUGIN_FILES:
         (cfgmod.PLUGIN_DIR / name).unlink(missing_ok=True)
+    current = {(cfgmod.PLUGIN_DIR / name).parent for name in files}
+    for folder in _version_folders():
+        if folder not in current:
+            _remove_version_folder(folder)
+
+
+def _version_folders() -> list[Path]:
+    """The plugin/v<version> folders in the plugins folder copy."""
+    return sorted(p for p in (cfgmod.PLUGIN_DIR / "plugin").glob("v[0-9]*") if p.is_dir() and not p.is_symlink())
+
+
+def _remove_version_folder(folder: Path) -> None:
+    """Remove the QML a copy install put there, and the folder once empty."""
+    for qml in folder.glob("*.qml"):
+        qml.unlink(missing_ok=True)
+    try:
+        folder.rmdir()
+    except OSError:
+        pass  # holds files that are not ours
 
 
 def remove_plugin_copy() -> None:
-    for name in (*PLUGIN_FILES, *OLD_PLUGIN_FILES):
+    for name in ("manifest.json", *OLD_PLUGIN_FILES):
         (cfgmod.PLUGIN_DIR / name).unlink(missing_ok=True)
-    for folder in (cfgmod.PLUGIN_DIR / "plugin" / "overlay", cfgmod.PLUGIN_DIR / "plugin" / "bar",
-                   cfgmod.PLUGIN_DIR / "plugin", cfgmod.PLUGIN_DIR):
+    for folder in _version_folders():
+        _remove_version_folder(folder)
+    for folder in (cfgmod.PLUGIN_DIR / "plugin", cfgmod.PLUGIN_DIR):
         try:
             folder.rmdir()
         except OSError:
@@ -396,8 +426,10 @@ def install(enable: bool = True) -> tuple[str, str]:
 
     ``enable=False`` is for the overlay's own call: it is loaded already.
     """
-    missing = [f for f in ("bin/omaprofile", *PLUGIN_FILES)
-               if not (SRC_ROOT / f).is_file()]
+    files = plugin_files()
+    missing = [f for f in ("bin/omaprofile", *files) if not (SRC_ROOT / f).is_file()]
+    if len(files) == 1:
+        missing.append("manifest.json entry points")
     if missing:
         raise InstallError(f"{SRC_ROOT} is not an omaprofile checkout (missing {', '.join(missing)}); "
                            "clone the repository and run bin/omaprofile install from it")
