@@ -9,23 +9,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-# Every test runs in a throwaway home. omaprofile's paths are computed from
-# these at import time, so a test that forgets to redirect one still lands
-# here, never in the real ~/.config, ~/.local or the running desktop.
-SANDBOX = Path(tempfile.mkdtemp(prefix="omaprofile-test-home."))
-os.environ.update({
-    "HOME": str(SANDBOX),
-    "XDG_CONFIG_HOME": str(SANDBOX / ".config"),
-    "XDG_DATA_HOME": str(SANDBOX / ".local" / "share"),
-    "XDG_STATE_HOME": str(SANDBOX / ".local" / "state"),
-    "XDG_CACHE_HOME": str(SANDBOX / ".cache"),
-    "XDG_RUNTIME_DIR": str(SANDBOX / "run"),  # no omarchy-shell IPC socket here
-    "DBUS_SESSION_BUS_ADDRESS": "unix:path=" + str(SANDBOX / "no-bus"),
-})
-for name in ("HYPRLAND_INSTANCE_SIGNATURE", "WAYLAND_DISPLAY"):  # no hyprctl reload of the real session
-    os.environ.pop(name, None)
-(SANDBOX / "run").mkdir(mode=0o700)
-unittest.addModuleCleanup(shutil.rmtree, SANDBOX, ignore_errors=True)
+# Every test runs in a throwaway home (tests/sandbox.py); import it first.
+from sandbox import SANDBOX  # noqa: E402
 
 from omaprofile import cli, config as cfgmod, install as inst, policy  # noqa: E402
 

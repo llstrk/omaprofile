@@ -117,7 +117,13 @@ exists is skipped with a notification and the picker is shown instead.
 - `manifest.json` — the `dry.omaprofile` plugin manifest, at the root so
   `omarchy plugin add` can install the repository as is.
 - `plugin/Omaprofile.qml` — the picker overlay.
-- `tests/` — `python3 -m unittest discover -s tests`.
+- `tests/` — `python3 -m unittest discover -s tests` runs everything,
+  including the feature scenarios. All tests run in a throwaway home
+  (`tests/sandbox.py`).
+- `features/` — behaviour specs in Gherkin, run by a small stdlib runner
+  (`tests/gherkin.py`) against the real CLI in a git clone, with Omarchy's
+  commands faked. `python3 tests/gherkin.py` prints each step's result.
+  Scenarios tagged `@nest` are checked by eye in an omadev nest.
 - Config: `~/.config/omaprofile/config.json`.
 - Cleanup copy: `~/.local/share/omaprofile/cleanup/`, the CLI kept outside
   the plugin folder so removing the plugin can still uninstall.
