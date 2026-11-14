@@ -6,8 +6,8 @@ requires-python = ">=3.11"
 license = "MIT"
 dependencies = []
 
-# Run from a git checkout (bin/omaprofile install): install deploys plugin/ and
-# hypr/ from next to the package, which a wheel does not carry.
+# Run from a git checkout (bin/omaprofile install): install deploys plugin/ from
+# next to the package, which a wheel does not carry.
 
 [build-system]
 requires = ["setuptools>=77"]

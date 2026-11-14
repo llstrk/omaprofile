@@ -1,4 +1,4 @@
-"""Deploy the shell plugin, link the CLI, register as default browser, hook web apps.
+"""Deploy the shell plugin, link the CLI, register as default browser, route web apps.
 
 Two ways in. `omarchy plugin add <repo>` clones the whole repository into the
 plugins folder, and the overlay runs ``install --auto`` from there when it
@@ -13,8 +13,9 @@ overlay unloads it watches its folder, and when the folder goes away it runs
 which asks in a floating terminal whether to undo omaprofile's changes. The
 launcher in ~/.local/bin does the same if it finds the plugin gone.
 
-``uninstall`` undoes every step: the previous link handlers come back, the web
-app launchers and hyprland.lua are restored, the CLI link goes away and the
+``uninstall`` undoes every step: the previous link handlers come back, the
+chromium.desktop for web apps goes away (or back to the user's own), so does
+the CLI link, and the
 plugin is disabled (and removed, unless Omarchy manages it). Only the config
 file is kept.
 """
@@ -36,6 +37,24 @@ SRC_ROOT = Path(__file__).resolve().parent.parent
 LAUNCHER = SRC_ROOT / "bin" / "omaprofile"
 PLUGIN_FILES = ("manifest.json", "plugin/Omaprofile.qml")  # relative to the repository root
 OLD_PLUGIN_FILES = ("Omaprofile.qml",)  # flat layout copied by 0.2.0 and earlier
+# Omarchy starts every web app (launchers, keybindings, launch-or-focus) with
+# omarchy-launch-webapp. For a default browser it does not know, omaprofile
+# among them, that takes the browser command from chromium.desktop's Exec,
+# looked up in ~/.local/share/applications first. omaprofile puts its own
+# chromium.desktop there: web apps (--app=URL) go through the picker, anything
+# else goes straight to Chromium.
+CHROMIUM_ID = "chromium.desktop"
+CHROMIUM_MARK = "# omaprofile: routes Omarchy web apps through the profile picker; `omaprofile uninstall` removes it."
+CHROMIUM_BACKUP = cfgmod.STATE_FILE.parent / "chromium.desktop.orig"  # a chromium.desktop the user had
+HIDDEN_CHROMIUM_ENTRY = """[Desktop Entry]
+Type=Application
+Name=Chromium (omaprofile)
+Exec={exec_line}
+NoDisplay=true
+"""
+
+# Older versions (0.2.x) routed web apps by rewriting each launcher and with a
+# Hyprland hook; install and the overlay's refresh take those back out.
 HYPR_HOOK = cfgmod.HYPR_DIR / "omaprofile.lua"
 HYPRLAND_LUA = cfgmod.HYPR_DIR / "hyprland.lua"
 # "Don't ask again" in the setup popup; install and uninstall clear it.
@@ -49,13 +68,6 @@ OMARCHY_WEBAPP_EXEC = "Exec=omarchy-launch-webapp "
 OMAPROFILE_WEBAPP_EXEC_RE = re.compile(r'^Exec=(?:"[^"\n]*omaprofile"|\S*omaprofile) webapp open ', re.M)
 
 REQUIRE_LINE = 'require("hypr.omaprofile")'
-REQUIRE_BLOCK = (
-    "-- omaprofile: route web app bindings through the profile picker. Must come\n"
-    "-- before the defaults so their web app bindings pick up the override.\n"
-    f"{REQUIRE_LINE}\n"
-    "\n"
-)
-DEFAULTS_LINE = re.compile(r'^\s*require\(\s*["\']default\.hypr\.omarchy["\']\s*\)', re.M)
 
 
 SHIM_MARK = "# omaprofile launcher, written by `omaprofile install`."
@@ -86,6 +98,7 @@ fi
 case "$1" in
   webapp) shift; [ "$1" = open ] && shift; url=$1; shift; exec "$browser" --app="$url" "$@" ;;
   browser) shift; [ "$1" = open ] && shift ;;
+  chromium) shift ;;
 esac
 for a; do shift; [ "$a" = --private ] && a=--incognito; set -- "$@" "$a"; done
 exec "$browser" "$@"
@@ -219,47 +232,110 @@ def remove_plugin_copy() -> None:
             pass  # holds files that are not ours
 
 
-def omaprofile_webapp_exec() -> str:
-    return f"Exec={desktop_exec_arg(cfgmod.BIN_LINK)} webapp open "
+def chromium_override() -> Path:
+    return cfgmod.DESKTOP_FILE.parent / CHROMIUM_ID
 
 
-def rewrite_webapps(to_omaprofile: bool) -> list[Path]:
-    """Point Omarchy web app launchers (Exec lines) at omaprofile, or back at Omarchy."""
+def system_chromium_entry() -> Path | None:
+    """Chromium's own desktop entry, from the system data dirs."""
+    dirs = os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share"
+    for d in dirs.split(":"):
+        path = Path(d) / "applications" / CHROMIUM_ID
+        if d and path.is_file():
+            return path
+    return None
+
+
+def chromium_override_text() -> str:
+    """Chromium's entry with its main Exec running `omaprofile chromium` and the same arguments.
+
+    The Desktop Actions (New Window, Incognito) keep starting Chromium itself.
+    A chromium.desktop the user had is the base, so their flags still apply.
+    """
+    exe = desktop_exec_arg(cfgmod.BIN_LINK)
+    base = CHROMIUM_BACKUP if CHROMIUM_BACKUP.is_file() else system_chromium_entry()
+    if base is None:
+        return CHROMIUM_MARK + "\n" + HIDDEN_CHROMIUM_ENTRY.format(exec_line=f"{exe} chromium %U")
+    out, group, done = [CHROMIUM_MARK + "\n"], "", False
+    for line in base.read_text().splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped.startswith("["):
+            group = stripped
+        elif group == "[Desktop Entry]" and not done and line.startswith("Exec="):
+            args = line[len("Exec="):].rstrip("\n").split(" ", 1)[1:]  # drop Chromium's command
+            line = f"Exec={exe} chromium{' ' + args[0] if args else ''}\n"
+            done = True
+        out.append(line)
+    return "".join(out)
+
+
+def is_our_chromium_override(path: Path | None = None) -> bool:
+    try:
+        return (path or chromium_override()).read_text().startswith(CHROMIUM_MARK)
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def write_chromium_override() -> bool:
+    """Write (or refresh) ~/.local/share/applications/chromium.desktop. True if it changed."""
+    path = chromium_override()
+    if path.exists() and not is_our_chromium_override(path) and not CHROMIUM_BACKUP.exists():
+        CHROMIUM_BACKUP.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, CHROMIUM_BACKUP)
+    text = chromium_override_text()
+    if is_our_chromium_override(path) and path.read_text() == text:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return True
+
+
+def remove_chromium_override() -> None:
+    """Remove our chromium.desktop, putting back the one the user had."""
+    path = chromium_override()
+    if is_our_chromium_override(path):
+        path.unlink()
+    if CHROMIUM_BACKUP.is_file():
+        if not path.exists():
+            shutil.copy2(CHROMIUM_BACKUP, path)
+        CHROMIUM_BACKUP.unlink()
+
+
+def webapps_need_space_free_path() -> bool:
+    """omarchy-launch-webapp takes the command up to the first space of Exec."""
+    return " " in str(cfgmod.BIN_LINK)
+
+
+def restore_webapps() -> list[Path]:
+    """Point launchers an older version rewrote back at omarchy-launch-webapp."""
     changed = []
-    new = omaprofile_webapp_exec() if to_omaprofile else OMARCHY_WEBAPP_EXEC
     for desktop in sorted(cfgmod.DESKTOP_FILE.parent.glob("*.desktop")):
-        if desktop.name == cfgmod.DESKTOP_ID:
+        if desktop.name in (cfgmod.DESKTOP_ID, CHROMIUM_ID):
             continue
-        text = desktop.read_text()
-        updated = OMAPROFILE_WEBAPP_EXEC_RE.sub(new, text)
-        if to_omaprofile:
-            updated = updated.replace(OMARCHY_WEBAPP_EXEC, new)
+        try:
+            text = desktop.read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        updated = OMAPROFILE_WEBAPP_EXEC_RE.sub(OMARCHY_WEBAPP_EXEC, text)
         if updated != text:
             desktop.write_text(updated)
             changed.append(desktop)
     return changed
 
 
-# ------------------------------------------------------------ hyprland.lua
+def remove_legacy_routing() -> bool:
+    """Take out an older version's launcher rewrites and Hyprland hook. True if anything changed."""
+    changed = bool(restore_webapps())
+    hooked = remove_hypr_require()  # require line first, then the file it loads
+    if HYPR_HOOK.exists():
+        HYPR_HOOK.unlink()
+        hooked = True
+    if hooked:
+        reload_hyprland()
+    return changed or hooked
 
-def add_hypr_require(path: Path | None = None) -> str:
-    """Load the hook before Omarchy's defaults. Returns 'added', 'present' or 'manual'."""
-    path = path or HYPRLAND_LUA
-    try:
-        lines = path.read_text().splitlines(keepends=True)
-    except OSError:
-        return "manual"
-    if any(line.strip() == REQUIRE_LINE for line in lines):
-        return "present"
-    at = next((i for i, line in enumerate(lines) if DEFAULTS_LINE.match(line)), None)
-    if at is None:
-        return "manual"
-    while at > 0 and lines[at - 1].lstrip().startswith("--"):
-        at -= 1  # keep the comment above the defaults line attached to it
-    lines.insert(at, REQUIRE_BLOCK)
-    path.write_text("".join(lines))
-    return "added"
 
+# ------------------------------------------------------------ hyprland.lua (0.2.x)
 
 def remove_hypr_require(path: Path | None = None) -> bool:
     """Drop the require line, the '-- omaprofile:' comment above it and one blank line after."""
@@ -309,11 +385,11 @@ def load_handlers() -> dict:
 # ------------------------------------------------------------ install / uninstall
 
 def install(enable: bool = True) -> tuple[str, str]:
-    """How hyprland.lua was handled ('added', 'present' or 'manual') and the plugin enable error, if any.
+    """How web apps are routed ('ok', or 'manual' when they cannot be) and the plugin enable error, if any.
 
     ``enable=False`` is for the overlay's own call: it is loaded already.
     """
-    missing = [f for f in ("bin/omaprofile", *PLUGIN_FILES, "hypr/omaprofile.lua")
+    missing = [f for f in ("bin/omaprofile", *PLUGIN_FILES)
                if not (SRC_ROOT / f).is_file()]
     if missing:
         raise InstallError(f"{SRC_ROOT} is not an omaprofile checkout (missing {', '.join(missing)}); "
@@ -334,17 +410,14 @@ def install(enable: bool = True) -> tuple[str, str]:
     # Desktop entries run the ~/.local/bin link, not the checkout: xdg-mime and
     # `omarchy launch browser` split Exec on the first space and ignore quoting,
     # so a checkout path with a space in it would make the entry invisible.
-    register(cfgmod.BIN_LINK)
-    rewrite_webapps(to_omaprofile=True)
-    # Hook file before the require line that loads it.
-    HYPR_HOOK.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(SRC_ROOT / "hypr" / "omaprofile.lua", HYPR_HOOK)
-    hook = add_hypr_require()
-    reload_hyprland()
+    write_chromium_override()
+    register(cfgmod.BIN_LINK)  # also refreshes the desktop database
+    remove_legacy_routing()
+    webapps = "manual" if webapps_need_space_free_path() else "ok"
     DECLINED_FILE.unlink(missing_ok=True)
     # Last: the overlay asks for install when it loads and finds no record.
     plugin_error = enable_plugin() if enable else ""
-    return hook, plugin_error
+    return webapps, plugin_error
 
 
 def setup_state() -> str:
@@ -370,10 +443,11 @@ def decline_setup() -> None:
 
 
 def refresh() -> bool:
-    """Bring the launcher script and the Hyprland hook up to date with this checkout.
+    """Bring the launcher script and the web app route up to date with this checkout.
 
     Only files that are already ours and point here: another checkout's
-    launcher, or one that is gone, is left as it is.
+    launcher, or one that is gone, is left as it is. An install by an older
+    version moves over to the chromium.desktop route.
     """
     changed = write_cleanup_copy() if cfgmod.STATE_FILE.exists() else False
     target = shim_target()
@@ -382,16 +456,16 @@ def refresh() -> bool:
         if cfgmod.BIN_LINK.is_symlink() or cfgmod.BIN_LINK.read_text() != text:
             write_shim()
             changed = True
-    source = SRC_ROOT / "hypr" / "omaprofile.lua"
-    if HYPR_HOOK.is_file() and HYPR_HOOK.read_bytes() != source.read_bytes():
-        shutil.copyfile(source, HYPR_HOOK)
-        reload_hyprland()
-        changed = True
+    if cfgmod.STATE_FILE.exists():
+        if write_chromium_override():
+            subprocess.run(["update-desktop-database", str(cfgmod.DESKTOP_FILE.parent)], capture_output=True)
+            changed = True
+        changed = remove_legacy_routing() or changed
     return changed
 
 
 def reload_hyprland() -> None:
-    """Rebuild the keybindings so the web app ones pick up (or drop) the hook now."""
+    """Rebuild the keybindings so the web app ones drop an older version's hook now."""
     if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") and shutil.which("hyprctl"):
         subprocess.run(["hyprctl", "reload"], capture_output=True)
 
@@ -424,14 +498,11 @@ def uninstall(fallback: str = "chromium.desktop", removed: bool = False) -> bool
     # loads without one asks to install again.
     if not removed:
         subprocess.run(["omarchy", "plugin", "disable", PLUGIN_ID], capture_output=True)
-    unregister(load_handlers(), fallback)
+    remove_chromium_override()
+    unregister(load_handlers(), fallback)  # also refreshes the desktop database
     cfgmod.STATE_FILE.unlink(missing_ok=True)
     DECLINED_FILE.unlink(missing_ok=True)
-    rewrite_webapps(to_omaprofile=False)
-    # require line first, then the file it loads.
-    remove_hypr_require()
-    HYPR_HOOK.unlink(missing_ok=True)
-    reload_hyprland()
+    remove_legacy_routing()
 
     managed = managed_by_omarchy()
     if not managed and not removed:

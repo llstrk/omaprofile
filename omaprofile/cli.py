@@ -19,9 +19,8 @@ from . import config as cfgmod
 from .browser import Browser, BrowserError, default_browser, looks_like_url
 from .contexts import Context, ContextError
 from .extensions import Extensions
-from .install import (CLEANUP_DIR, CLEANUP_LOCK, HYPRLAND_LUA, LAUNCHER, REQUIRE_LINE, InstallError,
-                      decline_setup, install, plugin_was_removed, remove_cleanup_copy, setup_state,
-                      uninstall)
+from .install import (CLEANUP_DIR, CLEANUP_LOCK, LAUNCHER, InstallError, decline_setup, install,
+                      plugin_was_removed, remove_cleanup_copy, setup_state, uninstall)
 from .picker import Choice, PickerError, notify, pick
 from . import policy
 
@@ -32,6 +31,8 @@ omaprofile — pick a profile before something launches.
   omaprofile browser launch <profile> [args]   open as a profile, no picker
   omaprofile browser profiles                  list profiles
   omaprofile webapp open <url> [flags...]      pick a profile, open as a web app
+  omaprofile chromium [args...]                Omarchy's chromium.desktop: --app=URL picks
+                                               a profile, anything else starts Chromium
   omaprofile extensions [sync]                 pick a profile (or all), sync extensions
   omaprofile extensions sync all|<profile>     sync from the first profile, no picker
   omaprofile extensions list                   first profile's extensions vs the others
@@ -41,7 +42,7 @@ omaprofile — pick a profile before something launches.
   omaprofile pick [--title T] [--subtitle S] CHOICE...
                                                generic picker; prints chosen id
                                                CHOICE = id|label|color|glyph|detail
-  omaprofile install                           plugin, default browser, web app hook
+  omaprofile install                           plugin, default browser, web app route
   omaprofile install --auto                    the overlay's call: ask to install if needed
   omaprofile uninstall [fallback.desktop]      undo install, restore the previous browser
   omaprofile policy [recommend|restore]        Omarchy's Chromium theme policy: show,
@@ -85,6 +86,17 @@ def cmd_webapp(cfg: dict, args: list[str]) -> None:
         Browser(cfg).open_webapp(rest[0], rest[1:])
     else:
         raise UsageError("usage: omaprofile webapp open <url> [flags...]")
+
+
+def cmd_chromium(cfg: dict, args: list[str]) -> None:
+    """omaprofile's chromium.desktop. omarchy-launch-webapp runs it as `<command> --app=URL [flags]`."""
+    if args and args[0].startswith("--app="):
+        cmd_webapp(cfg, ["open", args[0][len("--app="):], *args[1:]])
+        return
+    chromium = shutil.which("chromium")
+    if not chromium:
+        raise BrowserError("chromium is not installed")
+    os.execv(chromium, ["chromium", *args])
 
 
 def cmd_extensions(cfg: dict, args: list[str]) -> None:
@@ -144,26 +156,23 @@ def cmd_install(cfg: dict, args: list[str]) -> None:
         return
     if args:
         raise UsageError("usage: omaprofile install [--auto]")
-    hook, plugin_error = install()
+    webapps, plugin_error = install()
     print(f"installed: default browser is {default_browser()}, cli {cfgmod.BIN_LINK} -> {LAUNCHER}")
     if plugin_error:
         print(f"plugin: could not enable {PLUGIN_ID} ({plugin_error}); is the Omarchy shell running? "
               f"Then run: omarchy plugin enable {PLUGIN_ID}", file=sys.stderr)
     else:
         print(f"plugin: {PLUGIN_ID} enabled")
-    if hook == "added":
-        print(f"web apps: added {REQUIRE_LINE} to {HYPRLAND_LUA}")
-    elif hook == "manual":
-        print(f"web apps: add {REQUIRE_LINE} to {HYPRLAND_LUA} before require(\"default.hypr.omarchy\") "
-              "so Omarchy's web app keybindings use the picker", file=sys.stderr)
+    if webapps == "manual":
+        print(f"web apps: {cfgmod.BIN_LINK} has a space in its path, which Omarchy's web app "
+              "launcher cannot run; web apps open without the picker", file=sys.stderr)
     cmd_contexts(cfgmod.load(), [])
 
 
 SETUP_BODY = (
     "To open links in the profile you choose, omaprofile needs to:\n"
     "\u2022 become the default browser for http, https and HTML files (xdg-mime)\n"
-    "\u2022 point your web app launchers at the picker\n"
-    "\u2022 add one line to ~/.config/hypr/hyprland.lua for the web app keys\n"
+    "\u2022 route Omarchy web apps through the picker (its own chromium.desktop)\n"
     "\u2022 add the omaprofile command to ~/.local/bin\n"
     "\n"
     "Your current browser settings are saved; uninstall restores them."
@@ -183,10 +192,10 @@ def cmd_auto_install() -> None:
                detail="To set up later, run the install command from the README"),
     ], body=SETUP_BODY)
     if choice == "install":
-        hook, _ = install(enable=False)
+        webapps, _ = install(enable=False)
         body = "Links from any app now ask which profile to open in."
-        if hook == "manual":
-            body += f" For the web app keys, add {REQUIRE_LINE} to {HYPRLAND_LUA}."
+        if webapps == "manual":
+            body += " Web apps open without it: your home folder path has a space."
         notify("omaprofile is set up", body)
         ask_policy()
     elif choice == "never":
@@ -288,8 +297,8 @@ choice=$(gum choose --header "" "Undo its changes" "Leave them for now")
 
 def ask_removal(timeout: float = 600) -> str:
     """Ask in a floating terminal whether to undo omaprofile's changes: 'undo', 'leave', or '' if nobody could."""
-    what = ("the default browser, web apps, Hyprland and the Chromium theme policy"
-            if policy.MOVED_MARKER.exists() else "the default browser, web apps and Hyprland")
+    what = ("the default browser, web apps and the Chromium theme policy"
+            if policy.MOVED_MARKER.exists() else "the default browser and web apps")
     question = f"Undo its changes to {what}? Leaving them, links open in the browser directly."
     if not shutil.which("xdg-terminal-exec"):
         return ""
@@ -357,6 +366,7 @@ def cmd_help(cfg: dict, args: list[str]) -> None:
 GROUPS = {
     "browser": cmd_browser,
     "webapp": cmd_webapp,
+    "chromium": cmd_chromium,
     "extensions": cmd_extensions,
     "pick": cmd_pick,
     "contexts": cmd_contexts,
@@ -374,6 +384,9 @@ GROUPS = {
 
 def dispatch(argv: list[str]) -> None:
     cfg = cfgmod.load()
+    if argv and argv[0].startswith("--app="):  # omarchy-launch-webapp: <chromium.desktop's command> --app=URL
+        cmd_chromium(cfg, argv)
+        return
     group, rest = split_action(argv, default="browser")
     if group in GROUPS:
         GROUPS[group](cfg, rest)
