@@ -14,7 +14,9 @@ import qs.Ui
 //     "choices": [ { "id": "Profile 1", "label": "Personal", "detail": "Profile 1",
 //                    "color": "#f3b2be", "glyph": "P" }, ... ],
 //     "selectionFile": "/tmp/x", "doneFile": "/tmp/y",
-//     "choicesFile": "/tmp/z" }     (optional; rewritten to refresh the rows)
+//     "choicesFile": "/tmp/z",      (optional; rewritten to refresh the rows)
+//     "footer": "0.4.0 available · U to update",   (optional line under the rows)
+//     "footerCommand": ["omaprofile", "update", "--open"] }  (optional; U runs it)
 //
 // The chosen id is written to selectionFile and doneFile is touched. On
 // cancel only doneFile is touched. Same round-trip as omarchy.image-picker.
@@ -32,6 +34,8 @@ Item {
   property string selectionFile: ""
   property string doneFile: ""
   property string choicesPath: ""  // optional: rewritten by the CLI to refresh the rows
+  property string footer: ""  // optional line under the rows (an update waiting)
+  property var footerCommand: []  // what U runs, with the footer shown
   property int selectedIndex: 0
   // Keys are ignored for a moment after opening so a held Enter from the
   // launching keybind, or typing aimed at another window, cannot pick.
@@ -56,8 +60,9 @@ Item {
   property int headerHeight: Style.font.heading + Style.font.bodySmall + Style.space(10)
   property int cardWidth: Math.min(Style.space(root.body.length > 0 ? 520 : 400), panel.width - Style.gapsOut * 2)
   readonly property int bodyBlock: root.body.length > 0 ? bodyText.implicitHeight + Style.spacing.lg : 0
+  readonly property int footerBlock: root.footer.length > 0 ? footerText.implicitHeight + Style.spacing.lg : 0
   property int cardHeight: Math.min(
-    root.contentMargin * 2 + root.headerHeight + Style.spacing.lg + root.bodyBlock
+    root.contentMargin * 2 + root.headerHeight + Style.spacing.lg + root.bodyBlock + root.footerBlock
       + choices.count * (root.rowHeight + root.rowSpacing),
     panel.height - Style.gapsOut * 2)
 
@@ -83,6 +88,8 @@ Item {
     root.selectionFile = String(args.selectionFile || "")
     root.doneFile = String(args.doneFile || "")
     root.choicesPath = String(args.choicesFile || "")
+    root.footer = String(args.footer || "")
+    root.footerCommand = Array.isArray(args.footerCommand) ? args.footerCommand.map(String) : []
 
     fill(args.choices)
 
@@ -178,6 +185,30 @@ Item {
       Quickshell.execDetached(["sh", "-c", root.removalWatchScript, "omaprofile-removal-watch", root.watchDir])
   }
 
+  // The daily update check: a minute after loading, once setup has had its
+  // turn, then every hour. It goes to the network at most once a day.
+  function checkForUpdate() {
+    if (root.sourceDir)
+      Quickshell.execDetached(["sh", "-c", '[ -x "$1" ] && exec "$1" update --check --scheduled',
+                               "omaprofile", root.sourceDir + "/bin/omaprofile"])
+  }
+
+  Timer {
+    id: firstUpdateCheck
+    interval: 60000
+    running: true
+    repeat: false
+    onTriggered: root.checkForUpdate()
+  }
+
+  Timer {
+    id: updateCheckTimer
+    interval: 3600000
+    running: true
+    repeat: true
+    onTriggered: root.checkForUpdate()
+  }
+
   Timer {
     id: autoInstallTimer
     interval: 3000  // let the notification server come up at login
@@ -219,6 +250,8 @@ Item {
     root.selectionFile = ""
     root.doneFile = ""
     root.choicesPath = ""
+    root.footer = ""
+    root.footerCommand = []
     root.opened = false
     if (!done) return
 
@@ -286,6 +319,11 @@ Item {
           }
           if (k === Qt.Key_Escape) {
             root.dismiss()
+          } else if (k === Qt.Key_U && root.footer.length > 0 && root.footerCommand.length > 0) {
+            // The update line: U opens the updater (before U picks a profile by letter).
+            var command = root.footerCommand
+            root.dismiss()
+            Quickshell.execDetached(command)
           } else if (k === Qt.Key_Down || k === Qt.Key_J || k === Qt.Key_Tab) {
             root.move(1)
           } else if (k === Qt.Key_Up || k === Qt.Key_K || k === Qt.Key_Backtab) {
@@ -369,7 +407,7 @@ Item {
         ListView {
           id: list
           width: parent.width
-          height: parent.height - root.headerHeight - parent.spacing - root.bodyBlock
+          height: parent.height - root.headerHeight - parent.spacing - root.bodyBlock - root.footerBlock
           model: choices
           clip: true
           spacing: root.rowSpacing
@@ -468,6 +506,20 @@ Item {
               onClicked: root.choose(row.index)
             }
           }
+        }
+
+        Text {
+          id: footerText
+          textFormat: Text.PlainText
+          width: parent.width
+          visible: root.footer.length > 0
+          text: root.footer
+          color: root.foreground
+          opacity: 0.55
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          horizontalAlignment: Text.AlignHCenter
+          elide: Text.ElideRight
         }
       }
     }

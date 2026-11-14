@@ -51,10 +51,13 @@ REFRESH_EVERY = 0.5  # seconds between `refresh` polls while the overlay is open
 
 
 def pick(title: str, subtitle: str, choices: list[Choice], timeout: float = 600,
-         refresh: Callable[[], list[Choice] | None] | None = None, body: str = "") -> str | None:
+         refresh: Callable[[], list[Choice] | None] | None = None, body: str = "",
+         footer: str = "", footer_command: list[str] | None = None) -> str | None:
     """Show the overlay; return the chosen id, or None when cancelled.
 
     `body` is an optional paragraph under the title, wrapped to the card.
+    `footer` is a line under the rows; with `footer_command`, U runs that
+    command and closes the picker (the update line).
 
     `refresh`, polled while the overlay is open, returns new rows when the data
     behind them changed (None when it did not); the overlay swaps them in place.
@@ -68,6 +71,8 @@ def pick(title: str, subtitle: str, choices: list[Choice], timeout: float = 600,
             "title": title,
             "subtitle": subtitle,
             **({"body": body} if body else {}),
+            **({"footer": footer} if footer else {}),
+            **({"footerCommand": footer_command} if footer and footer_command else {}),
             "choices": [asdict(c) for c in choices],
             "selectionFile": sel_path,
             "doneFile": done_path,

@@ -44,9 +44,18 @@ Open a link from any app to try it. If Chromium has never run there are no
 profiles yet, so links open in plain Chromium until it has made one.
 
 ### Update
+Once a day omaprofile checks its repository for a new version (a `git fetch`,
+nothing else is contacted). When one is out, an up-arrow icon shows on the
+right of the bar and the picker shows a line, `0.4.0 available · U to update`.
+Click the icon, press U in the picker or run:
 ```sh
-omarchy plugin update dry.omaprofile
+omaprofile update            # what's new, then asks; same as omarchy plugin update dry.omaprofile
+omaprofile update --check    # check now
 ```
+A right click on the icon hides it until the next version. Without the icon
+on the bar, a notification says so instead, once per version. Turn checks off
+with `"updates": {"check": false}` in the config.
+
 The update pulls the overlay and the CLI together (the CLI runs from the
 clone); when the shell reloads the overlay it also refreshes
 `~/.local/bin/omaprofile` and `chromium.desktop` if they changed. Updating
@@ -116,11 +125,24 @@ exists is skipped with a notification and the picker is shown instead.
   `install.py` deployment, `policy.py` Omarchy's Chromium policy.
 - `manifest.json` — the `dry.omaprofile` plugin manifest, at the root so
   `omarchy plugin add` can install the repository as is.
-- `plugin/Omaprofile.qml` — the picker overlay.
-- `tests/` — `python3 -m unittest discover -s tests`.
+- `plugin/overlay/Omaprofile.qml` — the picker overlay.
+- `plugin/bar/UpdateIcon.qml` — the bar icon shown while an update is out.
+- Until it restarts, the shell keeps what it compiled from a QML path, even
+  across `omarchy plugin update`; a path it never loaded is read fresh. So a
+  release whose QML must take effect right away moves the file.
+- `CHANGELOG.md` — what each version changed; `omaprofile update` and the
+  "installed" notification show the new entries.
+- `tests/` — `python3 -m unittest discover -s tests` runs everything,
+  including the feature scenarios. All tests run in a throwaway home
+  (`tests/sandbox.py`).
+- `features/` — behaviour specs in Gherkin, run by a small stdlib runner
+  (`tests/gherkin.py`) against the real CLI in a git clone, with Omarchy's
+  commands faked. `python3 tests/gherkin.py` prints each step's result.
+  Scenarios tagged `@nest` are checked by eye in an omadev nest.
 - Config: `~/.config/omaprofile/config.json`.
 - Cleanup copy: `~/.local/share/omaprofile/cleanup/`, the CLI kept outside
   the plugin folder so removing the plugin can still uninstall.
+- Update check: `~/.local/state/omaprofile/update.json`.
 - Install record: `~/.local/state/omaprofile/install.json` (previous link
   handlers, restored by `uninstall`); `setup-declined` next to it after
   "Don't ask again".

@@ -31,12 +31,18 @@ from pathlib import Path
 
 from . import PLUGIN_ID
 from . import config as cfgmod
+from . import update
 from .browser import Browser, current_handlers, desktop_exec_arg, register, unregister
 
 SRC_ROOT = Path(__file__).resolve().parent.parent
 LAUNCHER = SRC_ROOT / "bin" / "omaprofile"
-PLUGIN_FILES = ("manifest.json", "plugin/Omaprofile.qml")  # relative to the repository root
-OLD_PLUGIN_FILES = ("Omaprofile.qml",)  # flat layout copied by 0.2.0 and earlier
+# Relative to the repository root. A QML file keeps a path only while it stays
+# the same: until it restarts, the shell reuses what it compiled from a path and
+# the listing of a folder it loaded from, even across `omarchy plugin update`.
+# A path it has never loaded is read fresh, so a release that has to take effect
+# right away moves the file (0.3.0: from plugin/ into these folders).
+PLUGIN_FILES = ("manifest.json", "plugin/overlay/Omaprofile.qml", "plugin/bar/UpdateIcon.qml")
+OLD_PLUGIN_FILES = ("Omaprofile.qml", "plugin/Omaprofile.qml")  # copied by 0.2.0 and earlier
 # Omarchy starts every web app (launchers, keybindings, launch-or-focus) with
 # omarchy-launch-webapp. For a default browser it does not know, omaprofile
 # among them, that takes the browser command from chromium.desktop's Exec,
@@ -225,7 +231,8 @@ def copy_plugin() -> None:
 def remove_plugin_copy() -> None:
     for name in (*PLUGIN_FILES, *OLD_PLUGIN_FILES):
         (cfgmod.PLUGIN_DIR / name).unlink(missing_ok=True)
-    for folder in (cfgmod.PLUGIN_DIR / "plugin", cfgmod.PLUGIN_DIR):
+    for folder in (cfgmod.PLUGIN_DIR / "plugin" / "overlay", cfgmod.PLUGIN_DIR / "plugin" / "bar",
+                   cfgmod.PLUGIN_DIR / "plugin", cfgmod.PLUGIN_DIR):
         try:
             folder.rmdir()
         except OSError:
@@ -415,8 +422,11 @@ def install(enable: bool = True) -> tuple[str, str]:
     remove_legacy_routing()
     webapps = "manual" if webapps_need_space_free_path() else "ok"
     DECLINED_FILE.unlink(missing_ok=True)
+    update.record_install()
     # Last: the overlay asks for install when it loads and finds no record.
     plugin_error = enable_plugin() if enable else ""
+    if not plugin_error:
+        keep_plugin_enabled()
     return webapps, plugin_error
 
 
@@ -433,6 +443,8 @@ def setup_state() -> str:
         return ""
     if cfgmod.STATE_FILE.exists():
         refresh()
+        keep_plugin_enabled()
+        update.after_reload()
         return ""
     return "" if DECLINED_FILE.exists() else "ask"
 
@@ -470,6 +482,60 @@ def reload_hyprland() -> None:
         subprocess.run(["hyprctl", "reload"], capture_output=True)
 
 
+SHELL_CONFIG = cfgmod.CONFIG_HOME / "omarchy" / "shell.json"
+
+
+def _shell_plugin_records(config: dict) -> list:
+    plugins = config.get("plugins")
+    return plugins if isinstance(plugins, list) else []
+
+
+def _is_ours(entry) -> bool:
+    return (entry.get("id") if isinstance(entry, dict) else entry) == PLUGIN_ID
+
+
+def _write_shell_config(config: dict) -> None:
+    """Write shell.json the way the shell does, then have the shell read it again."""
+    tmp = SHELL_CONFIG.with_name(SHELL_CONFIG.name + ".omaprofile.tmp")
+    tmp.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n")
+    shutil.copymode(SHELL_CONFIG, tmp)
+    os.replace(tmp, SHELL_CONFIG)
+    subprocess.run(["omarchy-shell", "-q", "shell", "reloadConfig"], capture_output=True)
+
+
+def keep_plugin_enabled() -> bool:
+    """Record the plugin in shell.json's plugins list, not only on the bar.
+
+    The shell enables a plugin that also has a bar widget by its bar entry
+    alone, so dragging the update icon off the bar would disable the plugin
+    and unload the picker with it. A plugins record keeps it enabled.
+    True when the record was added.
+    """
+    try:
+        config = json.loads(SHELL_CONFIG.read_text())
+    except (OSError, ValueError):
+        return False  # no config yet (the shell writes one), or not ours to repair
+    if not isinstance(config, dict) or any(_is_ours(e) for e in _shell_plugin_records(config)):
+        return False
+    if "plugins" in config and not isinstance(config["plugins"], list):
+        return False
+    config.setdefault("plugins", []).append({"id": PLUGIN_ID})
+    _write_shell_config(config)
+    return True
+
+
+def drop_plugin_record() -> None:
+    """Undo keep_plugin_enabled, so a disable really disables."""
+    try:
+        config = json.loads(SHELL_CONFIG.read_text())
+    except (OSError, ValueError):
+        return
+    if not isinstance(config, dict) or not any(_is_ours(e) for e in _shell_plugin_records(config)):
+        return
+    config["plugins"] = [e for e in config["plugins"] if not _is_ours(e)]
+    _write_shell_config(config)
+
+
 def enable_plugin(attempts: int = 40, wait: float = 0.25) -> str:
     """Rescan and enable the overlay; '' on success, else the last error.
 
@@ -498,6 +564,7 @@ def uninstall(fallback: str = "chromium.desktop", removed: bool = False) -> bool
     # loads without one asks to install again.
     if not removed:
         subprocess.run(["omarchy", "plugin", "disable", PLUGIN_ID], capture_output=True)
+    drop_plugin_record()  # the disable above takes only the bar entry
     remove_chromium_override()
     unregister(load_handlers(), fallback)  # also refreshes the desktop database
     cfgmod.STATE_FILE.unlink(missing_ok=True)

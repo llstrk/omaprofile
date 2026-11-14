@@ -9,23 +9,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-# Every test runs in a throwaway home. omaprofile's paths are computed from
-# these at import time, so a test that forgets to redirect one still lands
-# here, never in the real ~/.config, ~/.local or the running desktop.
-SANDBOX = Path(tempfile.mkdtemp(prefix="omaprofile-test-home."))
-os.environ.update({
-    "HOME": str(SANDBOX),
-    "XDG_CONFIG_HOME": str(SANDBOX / ".config"),
-    "XDG_DATA_HOME": str(SANDBOX / ".local" / "share"),
-    "XDG_STATE_HOME": str(SANDBOX / ".local" / "state"),
-    "XDG_CACHE_HOME": str(SANDBOX / ".cache"),
-    "XDG_RUNTIME_DIR": str(SANDBOX / "run"),  # no omarchy-shell IPC socket here
-    "DBUS_SESSION_BUS_ADDRESS": "unix:path=" + str(SANDBOX / "no-bus"),
-})
-for name in ("HYPRLAND_INSTANCE_SIGNATURE", "WAYLAND_DISPLAY"):  # no hyprctl reload of the real session
-    os.environ.pop(name, None)
-(SANDBOX / "run").mkdir(mode=0o700)
-unittest.addModuleCleanup(shutil.rmtree, SANDBOX, ignore_errors=True)
+# Every test runs in a throwaway home (tests/sandbox.py); import it first.
+from sandbox import SANDBOX  # noqa: E402
 
 from omaprofile import cli, config as cfgmod, install as inst, policy  # noqa: E402
 
@@ -855,14 +840,18 @@ class PluginModeTests(unittest.TestCase):
     def test_checkout_elsewhere_copies_overlay_and_drops_the_old_flat_file(self):
         self.plugins.mkdir(parents=True)
         (self.plugins / "Omaprofile.qml").write_text("old")
+        (self.plugins / "plugin").mkdir()
+        (self.plugins / "plugin" / "Omaprofile.qml").write_text("0.2.0")
         with mock.patch.object(inst, "SRC_ROOT", self.repo):
             self.assertFalse(inst.managed_by_omarchy())
             inst.copy_plugin()
         self.assertTrue((self.plugins / "manifest.json").is_file())
-        self.assertTrue((self.plugins / "plugin" / "Omaprofile.qml").is_file())
+        self.assertTrue((self.plugins / "plugin" / "overlay" / "Omaprofile.qml").is_file())
+        self.assertTrue((self.plugins / "plugin" / "bar" / "UpdateIcon.qml").is_file())
         self.assertFalse((self.plugins / "Omaprofile.qml").exists())
+        self.assertFalse((self.plugins / "plugin" / "Omaprofile.qml").exists())
         manifest = json.loads((self.plugins / "manifest.json").read_text())
-        self.assertEqual(manifest["entryPoints"]["overlay"], "plugin/Omaprofile.qml")
+        self.assertEqual(manifest["entryPoints"]["overlay"], "plugin/overlay/Omaprofile.qml")
         inst.remove_plugin_copy()
         self.assertFalse(self.plugins.exists())
 
@@ -1076,7 +1065,7 @@ class AutoInstallTests(unittest.TestCase):
             self.assertFalse(declined.exists())
 
     def test_overlay_runs_it_from_its_own_folder(self):
-        qml = (Path(__file__).resolve().parent.parent / "plugin" / "Omaprofile.qml").read_text()
+        qml = (Path(__file__).resolve().parent.parent / "plugin" / "overlay" / "Omaprofile.qml").read_text()
         self.assertIn('exec "$1" install --auto', qml)
         self.assertIn('dir + "/bin/omaprofile"', qml)
 
@@ -1343,7 +1332,7 @@ class RemovalWatchTests(unittest.TestCase):
     """The overlay's watch when it unloads, run as the overlay runs it."""
 
     def setUp(self):
-        qml = (Path(__file__).resolve().parent.parent / "plugin" / "Omaprofile.qml").read_text()
+        qml = (Path(__file__).resolve().parent.parent / "plugin" / "overlay" / "Omaprofile.qml").read_text()
         block = qml[qml.index("removalWatchScript: ["):]
         block = block[:block.index('].join("\\n")')]
         # Each line is a single-quoted JS string; undo its escapes as QML does.
@@ -1420,3 +1409,46 @@ class InstallOrderTests(unittest.TestCase):
              mock.patch.object(cfgmod, "STATE_FILE", Path(tmp) / "install.json"):
             inst.uninstall()
         self.assertLess(order.index("omarchy plugin disable"), order.index("unregister"))
+
+
+class PluginRecordTests(InstallFixtureCase):
+    """The picker must outlive the bar icon: a plugins record keeps the plugin enabled."""
+
+    def setUp(self):
+        super().setUp()
+        self.shell = self.root / "config" / "omarchy" / "shell.json"
+        self.shell.parent.mkdir(parents=True)
+        for patcher in (mock.patch.object(inst, "SHELL_CONFIG", self.shell),
+                        mock.patch.object(inst.subprocess, "run")):
+            self.calls = patcher.start()  # the last one: subprocess.run
+            self.addCleanup(patcher.stop)
+
+    def write(self, config):
+        self.shell.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n")
+
+    def test_adds_record_beside_bar_entry_once(self):
+        self.write({"bar": {"layout": {"right": [{"id": "omarchy.tray"}, {"id": inst.PLUGIN_ID}]}},
+                    "clock": "dddd · HH:mm"})
+        self.assertTrue(inst.keep_plugin_enabled())
+        config = json.loads(self.shell.read_text())
+        self.assertEqual(config["plugins"], [{"id": inst.PLUGIN_ID}])
+        self.assertEqual(config["clock"], "dddd · HH:mm")
+        self.assertIn("dddd · HH:mm", self.shell.read_text())  # written as the shell writes it
+        self.assertFalse(inst.keep_plugin_enabled())
+        self.assertEqual(json.loads(self.shell.read_text())["plugins"], [{"id": inst.PLUGIN_ID}])
+        reloads = [c for c in self.calls.call_args_list if "reloadConfig" in c.args[0]]
+        self.assertEqual(len(reloads), 1)
+
+    def test_keeps_other_plugins_and_skips_missing_or_broken_config(self):
+        self.assertFalse(inst.keep_plugin_enabled())  # no shell.json yet
+        self.shell.write_text("{ not json")
+        self.assertFalse(inst.keep_plugin_enabled())
+        self.assertEqual(self.shell.read_text(), "{ not json")
+        self.write({"plugins": [{"id": "dry.lock"}]})
+        inst.keep_plugin_enabled()
+        self.assertEqual(json.loads(self.shell.read_text())["plugins"], [{"id": "dry.lock"}, {"id": inst.PLUGIN_ID}])
+
+    def test_drop_removes_only_ours(self):
+        self.write({"plugins": [{"id": "dry.lock"}, {"id": inst.PLUGIN_ID}]})
+        inst.drop_plugin_record()
+        self.assertEqual(json.loads(self.shell.read_text())["plugins"], [{"id": "dry.lock"}])
