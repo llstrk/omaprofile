@@ -2,15 +2,24 @@
   "schemaVersion": 1,
   "id": "dry.omaprofile",
   "name": "Omaprofile",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": "dry",
   "license": "MIT",
   "description": "Profile picker for links and web apps. Asks to set itself up as the default browser when it first loads.",
   "kinds": [
-    "overlay"
+    "overlay",
+    "bar-widget"
   ],
   "keepLoaded": true,
   "entryPoints": {
-    "overlay": "plugin/Omaprofile.qml"
+    "overlay": "plugin/Omaprofile.qml",
+    "barWidget": "bar/UpdateIcon.qml"
+  },
+  "barWidget": {
+    "displayName": "Omaprofile updates",
+    "description": "Shows when a new omaprofile version is out; click to update.",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
   }
 }

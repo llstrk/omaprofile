@@ -23,6 +23,7 @@ from .install import (CLEANUP_DIR, CLEANUP_LOCK, LAUNCHER, InstallError, decline
                       plugin_was_removed, remove_cleanup_copy, setup_state, uninstall)
 from .picker import Choice, PickerError, notify, pick
 from . import policy
+from . import update
 
 USAGE = """\
 omaprofile — pick a profile before something launches.
@@ -48,6 +49,12 @@ omaprofile — pick a profile before something launches.
   omaprofile policy [recommend|restore]        Omarchy's Chromium theme policy: show,
                                                make it recommended, make it mandatory again
   omaprofile config                            print the config
+  omaprofile update                            show what's new, ask, update through Omarchy
+  omaprofile update --check                    look for a new version now
+  omaprofile update --check --scheduled        the overlay's daily check: quiet, once a day
+  omaprofile update --status                   what the bar icon shows, as JSON
+  omaprofile update --open | --dismiss         the bar icon's click: open the updater, or
+                                               hide the icon until the next version
 
 A bare URL, browser flag, or no argument at all means `browser open`, which
 is what the desktop entry and `omarchy launch browser` send.
@@ -174,6 +181,8 @@ SETUP_BODY = (
     "\u2022 become the default browser for http, https and HTML files (xdg-mime)\n"
     "\u2022 route Omarchy web apps through the picker (its own chromium.desktop)\n"
     "\u2022 add the omaprofile command to ~/.local/bin\n"
+    "\n"
+    "omaprofile also shows an icon in the bar when an update is out.\n"
     "\n"
     "Your current browser settings are saved; uninstall restores them."
 )
@@ -359,6 +368,39 @@ def cmd_config(cfg: dict, args: list[str]) -> None:
     print(json.dumps(cfg, indent=2))
 
 
+def cmd_update(cfg: dict, args: list[str]) -> None:
+    flags = set(args)
+    modes = flags & {"--check", "--status", "--open", "--dismiss"}
+    if (flags - modes - {"--scheduled"} or len(modes) > 1
+            or ("--scheduled" in flags and modes != {"--check"})):
+        raise UsageError("usage: omaprofile update [--check [--scheduled] | --status | --open | --dismiss]")
+    if "--scheduled" in flags:
+        update.scheduled_check(cfg)
+    elif "--check" in flags:
+        current = update.installed_version()
+        if not update.managed():
+            print(f"omaprofile {current} runs from the checkout at {update.SRC_ROOT}; "
+                  f"update it there with git pull")
+            return
+        try:
+            state = update.check(cfg)
+        except update.UpdateError as e:
+            raise UsageError(str(e)) from e
+        latest = state.get("available")
+        print(f"omaprofile {latest} is available (you have {current})" if update.newer(latest, current)
+              else f"omaprofile {current} is up to date")
+    elif "--status" in flags:
+        print(json.dumps(update.status(cfg)))
+    elif "--open" in flags:
+        update.open_updater()
+    elif "--dismiss" in flags:
+        update.dismiss()
+    else:
+        code = update.run(cfg)
+        if code:
+            sys.exit(code)
+
+
 def cmd_help(cfg: dict, args: list[str]) -> None:
     print(USAGE, end="")
 
@@ -374,6 +416,7 @@ GROUPS = {
     "uninstall": cmd_uninstall,
     "policy": cmd_policy,
     "config": cmd_config,
+    "update": cmd_update,
     "help": cmd_help,
     "-h": cmd_help,
     "--help": cmd_help,

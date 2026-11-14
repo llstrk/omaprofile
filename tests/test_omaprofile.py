@@ -1405,3 +1405,46 @@ class InstallOrderTests(unittest.TestCase):
              mock.patch.object(cfgmod, "STATE_FILE", Path(tmp) / "install.json"):
             inst.uninstall()
         self.assertLess(order.index("omarchy plugin disable"), order.index("unregister"))
+
+
+class PluginRecordTests(InstallFixtureCase):
+    """The picker must outlive the bar icon: a plugins record keeps the plugin enabled."""
+
+    def setUp(self):
+        super().setUp()
+        self.shell = self.root / "config" / "omarchy" / "shell.json"
+        self.shell.parent.mkdir(parents=True)
+        for patcher in (mock.patch.object(inst, "SHELL_CONFIG", self.shell),
+                        mock.patch.object(inst.subprocess, "run")):
+            self.calls = patcher.start()  # the last one: subprocess.run
+            self.addCleanup(patcher.stop)
+
+    def write(self, config):
+        self.shell.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n")
+
+    def test_adds_record_beside_bar_entry_once(self):
+        self.write({"bar": {"layout": {"right": [{"id": "omarchy.tray"}, {"id": inst.PLUGIN_ID}]}},
+                    "clock": "dddd · HH:mm"})
+        self.assertTrue(inst.keep_plugin_enabled())
+        config = json.loads(self.shell.read_text())
+        self.assertEqual(config["plugins"], [{"id": inst.PLUGIN_ID}])
+        self.assertEqual(config["clock"], "dddd · HH:mm")
+        self.assertIn("dddd · HH:mm", self.shell.read_text())  # written as the shell writes it
+        self.assertFalse(inst.keep_plugin_enabled())
+        self.assertEqual(json.loads(self.shell.read_text())["plugins"], [{"id": inst.PLUGIN_ID}])
+        reloads = [c for c in self.calls.call_args_list if "reloadConfig" in c.args[0]]
+        self.assertEqual(len(reloads), 1)
+
+    def test_keeps_other_plugins_and_skips_missing_or_broken_config(self):
+        self.assertFalse(inst.keep_plugin_enabled())  # no shell.json yet
+        self.shell.write_text("{ not json")
+        self.assertFalse(inst.keep_plugin_enabled())
+        self.assertEqual(self.shell.read_text(), "{ not json")
+        self.write({"plugins": [{"id": "dry.lock"}]})
+        inst.keep_plugin_enabled()
+        self.assertEqual(json.loads(self.shell.read_text())["plugins"], [{"id": "dry.lock"}, {"id": inst.PLUGIN_ID}])
+
+    def test_drop_removes_only_ours(self):
+        self.write({"plugins": [{"id": "dry.lock"}, {"id": inst.PLUGIN_ID}]})
+        inst.drop_plugin_record()
+        self.assertEqual(json.loads(self.shell.read_text())["plugins"], [{"id": "dry.lock"}])
