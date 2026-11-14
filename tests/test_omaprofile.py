@@ -160,7 +160,7 @@ class BrowserTests(unittest.TestCase):
         self.assertIsNone(self.browser.rule_match("https://example.com/"))
 
     def test_open_uses_rule_without_picker(self):
-        with mock.patch.object(Browser, "launch") as launch, mock.patch("omaprofile.browser.pick") as picker:
+        with mock.patch.object(Browser, "launch") as launch, mock.patch("omaprofile.browser.pick_choice") as picker:
             self.browser.open(["--private", "https://github.com/a"])
         picker.assert_not_called()
         profile, args = launch.call_args.args
@@ -169,7 +169,7 @@ class BrowserTests(unittest.TestCase):
 
     def test_open_asks_picker_and_cancel_drops_link(self):
         with mock.patch.object(Browser, "launch") as launch, \
-             mock.patch("omaprofile.browser.pick", return_value=None) as picker:
+             mock.patch("omaprofile.browser.pick_choice", return_value=(None, False)) as picker:
             self.browser.open(["https://example.com/"])
         launch.assert_not_called()
         self.assertEqual(picker.call_args.args[:2], ("Open with profile", "example.com"))
@@ -177,7 +177,7 @@ class BrowserTests(unittest.TestCase):
 
     def test_open_webapp_adds_app_flag(self):
         with mock.patch.object(Browser, "launch") as launch, \
-             mock.patch("omaprofile.browser.pick", return_value="Profile 1") as picker:
+             mock.patch("omaprofile.browser.pick_choice", return_value=("Profile 1", False)) as picker:
             self.browser.open_webapp("https://example.com/", ["--x"])
         self.assertEqual(picker.call_args.args[:2], ("Open web app as", "example.com"))
         profile, args = launch.call_args.args
@@ -390,7 +390,7 @@ class ProfilePickerExtensionsRowTests(ChromiumDirCase):
 
     def test_row_is_last_and_counts_missing(self):
         from omaprofile import browser as bmod
-        with mock.patch.object(bmod, "pick", return_value=None) as p:
+        with mock.patch.object(bmod, "pick_choice", return_value=(None, False)) as p:
             self.browser().open(["https://example.com"])
         last = p.call_args.args[2][-1]
         self.assertEqual((last.id, last.label, last.detail),
@@ -399,7 +399,7 @@ class ProfilePickerExtensionsRowTests(ChromiumDirCase):
     def test_manage_then_reshows_picker_for_the_link(self):
         from omaprofile import browser as bmod
         b = self.browser()
-        with mock.patch.object(bmod, "pick", side_effect=[bmod.MANAGE_EXTENSIONS, "Profile 2"]) as p, \
+        with mock.patch.object(bmod, "pick_choice", side_effect=[(bmod.MANAGE_EXTENSIONS, False), ("Profile 2", False)]) as p, \
              mock.patch.object(Browser, "manage_extensions") as manage, \
              mock.patch.object(Browser, "launch") as launch:
             b.open(["https://example.com"])
@@ -409,7 +409,7 @@ class ProfilePickerExtensionsRowTests(ChromiumDirCase):
 
     def test_manage_without_link_opens_nothing(self):
         from omaprofile import browser as bmod
-        with mock.patch.object(bmod, "pick", return_value=bmod.MANAGE_EXTENSIONS), \
+        with mock.patch.object(bmod, "pick_choice", return_value=(bmod.MANAGE_EXTENSIONS, False)), \
              mock.patch.object(Browser, "manage_extensions") as manage, \
              mock.patch.object(Browser, "launch") as launch:
             self.browser().open([])
@@ -462,16 +462,16 @@ class RefreshTests(ChromiumDirCase):
         root = Path(self.tmp.name)
         seen = {}
 
-        def fake_pick(title, subtitle, choices, refresh=None):
+        def fake_pick(title, subtitle, choices, refresh=None, remember=""):
             self.assertIsNone(refresh())  # nothing written yet
             state = json.loads((root / "Local State").read_text())
             state["profile"]["info_cache"]["Profile 2"]["name"] = "Renamed"
             time.sleep(0.01)
             (root / "Local State").write_text(json.dumps(state))
             seen["rows"] = refresh()
-            return None
+            return None, False
 
-        with mock.patch.object(bmod, "pick", side_effect=fake_pick):
+        with mock.patch.object(bmod, "pick_choice", side_effect=fake_pick):
             Browser({"browser": {"configDir": self.tmp.name}}).open(["https://example.com"])
         self.assertIn("Renamed", [c.label for c in seen["rows"]])
         self.assertEqual(seen["rows"][-1].id, bmod.MANAGE_EXTENSIONS)
@@ -514,7 +514,7 @@ class FreshBrowserTests(unittest.TestCase):
 
     def test_links_open_without_a_profile_flag(self):
         self.assertEqual(self.browser.profiles(), [])
-        with mock.patch("omaprofile.browser.pick") as picker, \
+        with mock.patch("omaprofile.browser.pick_choice") as picker, \
              mock.patch("omaprofile.browser.shutil.which", return_value="/usr/bin/chromium"), \
              mock.patch("omaprofile.browser.detached") as detached:
             self.browser.open(["https://a.b/"])
@@ -534,11 +534,73 @@ class MissingRuleProfileTests(unittest.TestCase):
         with mock.patch("pathlib.Path.read_text", return_value=json.dumps(LOCAL_STATE)), \
              mock.patch("pathlib.Path.exists", return_value=True), \
              mock.patch("omaprofile.browser.notify") as notify, \
-             mock.patch("omaprofile.browser.pick", return_value="Profile 1") as picker, \
+             mock.patch("omaprofile.browser.pick_choice", return_value=("Profile 1", False)) as picker, \
              mock.patch.object(Browser, "launch") as launch:
             Browser(cfg).open(["https://a.b/"])
         self.assertIn("Gone", notify.call_args.args[1])
         picker.assert_called_once()
+        self.assertEqual(launch.call_args.args[0].directory, "Profile 1")
+
+
+class RememberTests(unittest.TestCase):
+    """Shift+Enter in the picker: the selection file's second line, and the rule written."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def answer(self, text: str, remember: str = "github.com"):
+        from omaprofile import picker
+
+        def fake_ipc(*args):
+            payload = json.loads(args[3])
+            Path(payload["selectionFile"]).write_text(text)
+            Path(payload["doneFile"]).touch()
+            return "ok"
+
+        with mock.patch.object(picker, "_ipc", side_effect=fake_ipc):
+            return picker.pick_choice("T", "", [Choice("a")], remember=remember)
+
+    def test_selection_file_second_line(self):
+        self.assertEqual(self.answer("a\n"), ("a", False))
+        self.assertEqual(self.answer("a\nremember\n"), ("a", True))
+        self.assertEqual(self.answer("a\nremember\n", remember=""), ("a", False))  # not offered
+        self.assertEqual(self.answer(""), (None, False))
+
+    def test_add_rule_replaces_only_a_plain_rule_for_the_same_host(self):
+        from omaprofile.browser import add_rule
+        path = self.root / "config.json"
+        path.write_text(json.dumps({"browser": {"rules": [
+            {"host": "a.b", "profile": "Gone"},
+            {"host": "a.b", "url": "https://a.b/x/*", "profile": "Work"},
+            {"host": "c.d", "profile": "Work"}]}, "other": 1}))
+        add_rule({"host": "a.b", "profile": "Personal"}, path)
+        cfg = json.loads(path.read_text())
+        self.assertEqual(cfg["browser"]["rules"], [
+            {"host": "a.b", "url": "https://a.b/x/*", "profile": "Work"},
+            {"host": "c.d", "profile": "Work"},
+            {"host": "a.b", "profile": "Personal"}])
+        self.assertEqual(cfg["other"], 1)
+        self.assertFalse(path.with_name("config.json.tmp").exists())
+
+    def test_a_shared_name_is_saved_as_the_directory(self):
+        state = {"profile": {"info_cache": {"Default": {"name": "Work"}, "Profile 1": {"name": "Work"}}}}
+        (self.root / "Local State").write_text(json.dumps(state))
+        browser = Browser({"browser": {"configDir": self.tmp.name}})
+        with mock.patch("omaprofile.browser.add_rule") as add, mock.patch("omaprofile.browser.notify"):
+            browser.remember("a.b", browser.resolve("Profile 1"))
+        self.assertEqual(add.call_args.args[0], {"host": "a.b", "profile": "Profile 1"})
+
+    def test_a_config_that_cannot_be_written_still_opens_the_link(self):
+        (self.root / "Local State").write_text(json.dumps(LOCAL_STATE))
+        browser = Browser({"browser": {"configDir": self.tmp.name}})
+        with mock.patch("omaprofile.browser.add_rule", side_effect=PermissionError("read-only")), \
+             mock.patch("omaprofile.browser.notify") as notify, \
+             mock.patch("omaprofile.browser.pick_choice", return_value=("Profile 1", True)), \
+             mock.patch.object(Browser, "launch") as launch:
+            browser.open(["https://a.b/"])
+        self.assertEqual(notify.call_args.args[0], "omaprofile: rule not saved")
         self.assertEqual(launch.call_args.args[0].directory, "Profile 1")
 
 
@@ -1492,6 +1554,10 @@ class ReleaseScriptTests(unittest.TestCase):
             if (REPO / name).is_file():
                 (self.repo / name).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(REPO / name, self.repo / name)
+        # Start from a release: drop what the working tree has waiting under Unreleased.
+        changelog = self.repo / "CHANGELOG.md"
+        changelog.write_text(re.sub(r"^## Unreleased[ \t]*\n.*?(?=^## )", "", changelog.read_text(),
+                                    flags=re.M | re.S))
         env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
         for args in (["init", "-q"], ["add", "-A"],
                      ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "base"]):
