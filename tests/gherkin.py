@@ -189,6 +189,7 @@ def main(argv: list[str]) -> int:
     import sandbox  # noqa: F401  - before omaprofile is imported anywhere
     import steps_updates  # noqa: F401  - registers the steps
     import steps_rules  # noqa: F401
+    import steps_rules_editor  # noqa: F401
     from steps_updates import Context
 
     feature_dir = Path(argv[0]) if argv else here.parent / "features"
