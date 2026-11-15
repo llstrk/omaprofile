@@ -198,6 +198,8 @@ known group or context is an error, so a typo never opens a browser.
 ## Picker keys
 `1`-`9` pick directly, `j`/`k`/arrows move, Enter picks, Esc or a click
 outside cancels, a letter picks the first choice whose label starts with it.
+Shift+Enter (or a Shift+click) on a profile opens the link in it and adds a
+rule for the link's host, so that site's links open there from then on.
 Keys are ignored for the first 250 ms after the overlay opens, so a held
 Enter from the keybind or typing aimed elsewhere cannot pick.
 Profile colors and initials come from Chromium's profile color seed and name.
@@ -227,7 +229,8 @@ For scripts and tests: `omarchy-shell shell call dry.omaprofile choose <index>`.
   }
 }
 ```
-- Rules skip the picker. First match wins; patterns are shell globs
+- Rules skip the picker. Shift+Enter in the picker adds one for the link's
+  exact host, after the rules already there. First match wins; patterns are shell globs
   (`fnmatch`), `host` matched against the link's host (case-insensitive),
   `url` against the full URL. A rule needs a `profile` and at least one of
   `host`/`url`. `profile` is a display name (`Work`) or directory (`Profile 1`).

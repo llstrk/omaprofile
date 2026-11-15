@@ -16,10 +16,13 @@ import qs.Ui
 //     "selectionFile": "/tmp/x", "doneFile": "/tmp/y",
 //     "choicesFile": "/tmp/z",      (optional; rewritten to refresh the rows)
 //     "footer": "0.4.0 available · U to update",   (optional line under the rows)
-//     "footerCommand": ["omaprofile", "update", "--open"] }  (optional; U runs it)
+//     "footerCommand": ["omaprofile", "update", "--open"],  (optional; U runs it)
+//     "remember": "github.com" }    (optional; Shift+Enter makes a rule for it)
 //
 // The chosen id is written to selectionFile and doneFile is touched. On
 // cancel only doneFile is touched. Same round-trip as omarchy.image-picker.
+// With "remember" in the payload, picking with Shift held (Shift+Enter or a
+// Shift+click) adds a second line, "remember".
 
 Item {
   id: root
@@ -36,6 +39,7 @@ Item {
   property string choicesPath: ""  // optional: rewritten by the CLI to refresh the rows
   property string footer: ""  // optional line under the rows (an update waiting)
   property var footerCommand: []  // what U runs, with the footer shown
+  property string rememberHost: ""  // Shift+Enter opens it in the profile and makes a rule
   property int selectedIndex: 0
   // Keys are ignored for a moment after opening so a held Enter from the
   // launching keybind, or typing aimed at another window, cannot pick.
@@ -61,8 +65,9 @@ Item {
   property int cardWidth: Math.min(Style.space(root.body.length > 0 ? 520 : 400), panel.width - Style.gapsOut * 2)
   readonly property int bodyBlock: root.body.length > 0 ? bodyText.implicitHeight + Style.spacing.lg : 0
   readonly property int footerBlock: root.footer.length > 0 ? footerText.implicitHeight + Style.spacing.lg : 0
+  readonly property int hintBlock: root.rememberHost.length > 0 ? hintText.implicitHeight + Style.spacing.lg : 0
   property int cardHeight: Math.min(
-    root.contentMargin * 2 + root.headerHeight + Style.spacing.lg + root.bodyBlock + root.footerBlock
+    root.contentMargin * 2 + root.headerHeight + Style.spacing.lg + root.bodyBlock + root.hintBlock + root.footerBlock
       + choices.count * (root.rowHeight + root.rowSpacing),
     panel.height - Style.gapsOut * 2)
 
@@ -90,6 +95,7 @@ Item {
     root.choicesPath = String(args.choicesFile || "")
     root.footer = String(args.footer || "")
     root.footerCommand = Array.isArray(args.footerCommand) ? args.footerCommand.map(String) : []
+    root.rememberHost = String(args.remember || "")
 
     fill(args.choices)
 
@@ -234,17 +240,18 @@ Item {
 
   // Also reachable over IPC for scripting/tests:
   //   omarchy-shell shell call dry.omaprofile choose 1
-  function choose(index) {
+  // `remember` is Shift held: a rule for rememberHost, when the CLI offered one.
+  function choose(index, remember) {
     var i = parseInt(index)
     if (isNaN(i) || i < 0 || i >= choices.count) return "invalid"
     var id = choices.get(i).choiceId
-    root.finish(id)
+    root.finish(id, remember === true && root.rememberHost.length > 0)
     if (root.shell && typeof root.shell.hide === "function")
       root.shell.hide(root.pluginId())
     return id
   }
 
-  function finish(value) {
+  function finish(value, remember) {
     var sel = root.selectionFile
     var done = root.doneFile
     root.selectionFile = ""
@@ -252,12 +259,14 @@ Item {
     root.choicesPath = ""
     root.footer = ""
     root.footerCommand = []
+    root.rememberHost = ""
     root.opened = false
     if (!done) return
 
     var cmd = ""
     if (value && sel)
-      cmd += "printf '%s\\n' " + Util.shellQuote(value) + " > " + Util.shellQuote(sel) + "; "
+      cmd += "printf '%s\\n' " + Util.shellQuote(value) + (remember ? " remember" : "")
+        + " > " + Util.shellQuote(sel) + "; "
     cmd += ": > " + Util.shellQuote(done)
     Quickshell.execDetached(["bash", "-c", cmd])
   }
@@ -333,7 +342,8 @@ Item {
           } else if (k === Qt.Key_End) {
             root.selectedIndex = Math.max(0, choices.count - 1)
           } else if (k === Qt.Key_Return || k === Qt.Key_Enter || k === Qt.Key_Space) {
-            root.choose(root.selectedIndex)
+            // Shift+Enter: also make a rule for the link's host.
+            root.choose(root.selectedIndex, k !== Qt.Key_Space && (event.modifiers & Qt.ShiftModifier) !== 0)
           } else if (k >= Qt.Key_1 && k <= Qt.Key_9) {
             var n = k - Qt.Key_1
             if (n < choices.count) root.choose(n)
@@ -407,7 +417,7 @@ Item {
         ListView {
           id: list
           width: parent.width
-          height: parent.height - root.headerHeight - parent.spacing - root.bodyBlock - root.footerBlock
+          height: parent.height - root.headerHeight - parent.spacing - root.bodyBlock - root.hintBlock - root.footerBlock
           model: choices
           clip: true
           spacing: root.rowSpacing
@@ -503,9 +513,23 @@ Item {
               hoverEnabled: true
               cursorShape: Qt.PointingHandCursor
               onContainsMouseChanged: if (containsMouse) root.selectedIndex = row.index
-              onClicked: root.choose(row.index)
+              onClicked: function(mouse) { root.choose(row.index, (mouse.modifiers & Qt.ShiftModifier) !== 0) }
             }
           }
+        }
+
+        Text {
+          id: hintText
+          textFormat: Text.PlainText
+          width: parent.width
+          visible: root.rememberHost.length > 0
+          text: "Shift+Enter: always open " + root.rememberHost + " with this profile"
+          color: root.foreground
+          opacity: 0.55
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          horizontalAlignment: Text.AlignHCenter
+          elide: Text.ElideMiddle
         }
 
         Text {

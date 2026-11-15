@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 
 from . import config as cfgmod
 from . import update
-from .picker import Choice, detached, notify, pick
+from .picker import Choice, detached, notify, pick_choice
 
 MIME_TYPES = [
     "text/html",
@@ -179,10 +179,35 @@ class Browser:
 
         footer = update.footer(self.cfg)  # an update waiting: a line under the rows, U opens the updater
         extra = {"footer": footer, "footer_command": [str(update.LAUNCHER), "update", "--open"]} if footer else {}
-        chosen = pick(title, url_host(url) or "New window", last[1], refresh=refresh, **extra)
+        host = url_host(url)  # Shift+Enter makes a rule for it; nothing to match without one
+        chosen, remember = pick_choice(title, host or "New window", last[1], refresh=refresh,
+                                       remember=host, **extra)
         if chosen and not any(chosen == p.directory for p in self.profiles()) and extras:
             return chosen  # an extras row
-        return self.resolve(chosen) if chosen else None
+        if not chosen:
+            return None
+        profile = self.resolve(chosen)
+        if remember:
+            self.remember(host, profile)
+        return profile
+
+    def remember(self, host: str, profile: Profile) -> None:
+        """Shift+Enter in the picker: open `host`'s links in `profile` from now on.
+
+        The rule goes after the existing ones, which did not match this link. A
+        rule for the same host can only be there if its profile is gone (it
+        would have matched otherwise), so it is replaced rather than left to be
+        ignored on every link.
+        """
+        same_name = [p for p in self.profiles() if p.name == profile.name]
+        name = profile.name if profile.name and len(same_name) == 1 else profile.directory
+        try:
+            add_rule({"host": host, "profile": name})
+        except (OSError, cfgmod.ConfigError) as e:
+            notify("omaprofile: rule not saved", str(e))
+            return
+        notify(f"{host} opens in {profile.name or name} from now on",
+               f"The rule is in {display_path(cfgmod.CONFIG_FILE)}.")
 
     def launch(self, profile: Profile, args: list[str]) -> None:
         if not shutil.which(self.command):
@@ -226,6 +251,28 @@ class Browser:
         profile = self.choose_profile(url, "Open web app as")
         if profile:
             self.launch(profile, [f"--app={url}", *flags])
+
+
+def add_rule(rule: dict, path: Path | None = None) -> None:
+    """Append a host rule to the config file (written with the defaults when there is none)."""
+    path = path or cfgmod.CONFIG_FILE
+    cfg = cfgmod.load(path) if path.exists() else json.loads(json.dumps(cfgmod.DEFAULT_CONFIG))
+    section = cfg.setdefault("browser", {})
+    rules = check_rules(section.get("rules", []))
+    section["rules"] = [r for r in rules if not (set(r) <= {"host", "profile"} and r["host"] == rule["host"])] + [rule]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n")
+    if path.exists():
+        shutil.copymode(path, tmp)
+    os.replace(tmp, path)
+
+
+def display_path(path: Path) -> str:
+    try:
+        return "~/" + str(path.relative_to(Path.home()))
+    except ValueError:
+        return str(path)
 
 
 def check_rules(rules) -> list[dict]:

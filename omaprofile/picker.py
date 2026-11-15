@@ -50,10 +50,20 @@ def _ipc(*args: str) -> str:
 REFRESH_EVERY = 0.5  # seconds between `refresh` polls while the overlay is open
 
 
-def pick(title: str, subtitle: str, choices: list[Choice], timeout: float = 600,
-         refresh: Callable[[], list[Choice] | None] | None = None, body: str = "",
-         footer: str = "", footer_command: list[str] | None = None) -> str | None:
-    """Show the overlay; return the chosen id, or None when cancelled.
+def pick(*args, **kwargs) -> str | None:
+    """Show the overlay; return the chosen id, or None when cancelled. See pick_choice."""
+    return pick_choice(*args, **kwargs)[0]
+
+
+def pick_choice(title: str, subtitle: str, choices: list[Choice], timeout: float = 600,
+                refresh: Callable[[], list[Choice] | None] | None = None, body: str = "",
+                footer: str = "", footer_command: list[str] | None = None,
+                remember: str = "") -> tuple[str | None, bool]:
+    """Show the overlay; return the chosen id (None when cancelled) and whether
+    Shift was held to pick it.
+
+    `remember` names what Shift+Enter makes a rule for (a link's host); the
+    overlay says so under the rows. Without it Shift changes nothing.
 
     `body` is an optional paragraph under the title, wrapped to the card.
     `footer` is a line under the rows; with `footer_command`, U runs that
@@ -73,6 +83,7 @@ def pick(title: str, subtitle: str, choices: list[Choice], timeout: float = 600,
             **({"body": body} if body else {}),
             **({"footer": footer} if footer else {}),
             **({"footerCommand": footer_command} if footer and footer_command else {}),
+            **({"remember": remember} if remember else {}),
             "choices": [asdict(c) for c in choices],
             "selectionFile": sel_path,
             "doneFile": done_path,
@@ -97,8 +108,11 @@ def pick(title: str, subtitle: str, choices: list[Choice], timeout: float = 600,
                 if rows is not None:
                     _write_rows(choices_path, rows)
             time.sleep(0.03)
+        # The chosen id, then "remember" on a second line when Shift was held.
         with open(sel_path) as f:
-            return f.read().strip() or None
+            lines = f.read().split("\n")
+        chosen = lines[0].strip() or None
+        return chosen, bool(chosen and remember and "remember" in (line.strip() for line in lines[1:]))
     finally:
         for path in (sel_path, done_path, choices_path):
             _unlink(path)
