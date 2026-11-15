@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 - Shift+Enter in the picker opens the link and remembers the profile for that site.
 
 ## 0.3.0
