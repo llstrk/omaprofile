@@ -51,6 +51,8 @@ omaprofile — pick a profile before something launches.
                                                make it recommended, make it mandatory again
   omaprofile rules                             edit the browser rules (needs a terminal)
   omaprofile rules list                        print the rules in the order they are tried
+  omaprofile desktop [url...]                  the desktop entry: a link opens the picker,
+                                               none (the app launcher) opens the rules editor
   omaprofile config                            print the config
   omaprofile update                            show what's new, ask, update through Omarchy
   omaprofile update --check                    look for a new version now
@@ -417,6 +419,15 @@ def cmd_rules(cfg: dict, args: list[str]) -> None:
         raise UsageError("usage: omaprofile rules [list]")
 
 
+def cmd_desktop(cfg: dict, args: list[str]) -> None:
+    """What omaprofile.desktop runs: links go to the picker, no link (the app launcher's
+    Omaprofile) opens the rules editor in a floating terminal."""
+    if args:
+        cmd_browser(cfg, ["open", *args])
+    else:
+        rulesmod.open_in_terminal()
+
+
 def cmd_help(cfg: dict, args: list[str]) -> None:
     print(USAGE, end="")
 
@@ -433,6 +444,7 @@ GROUPS = {
     "policy": cmd_policy,
     "config": cmd_config,
     "rules": cmd_rules,
+    "desktop": cmd_desktop,
     "update": cmd_update,
     "help": cmd_help,
     "-h": cmd_help,

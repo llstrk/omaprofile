@@ -246,6 +246,41 @@ Feature: Seeing and changing rules in a terminal
         | gitlab.com   | Old     | profile gone |
         | codeberg.org | Work    |              |
 
+  Rule: Omaprofile in the app launcher opens the editor in a floating terminal
+
+    The desktop entry is also the default browser, so links sent to it still
+    open the picker. Super+Shift+Enter runs only the entry's first word,
+    without a terminal, so it still opens the browser (see above).
+
+    Scenario: Opening Omaprofile from the app launcher
+      Given omaprofile's desktop entry is set up
+      When Omaprofile is opened from the app launcher
+      Then the rules editor opens in a floating terminal
+      And the profile picker is not shown
+
+    Scenario: Links sent to the same entry still open the picker
+      Given omaprofile's desktop entry is set up
+      When the desktop entry opens a link to "https://example.com"
+      Then the profile picker is shown
+      And no floating terminal opens
+
+    Scenario: The entry's New Window action still opens the picker
+      Given omaprofile's desktop entry is set up
+      When the desktop entry's "New Window" action runs
+      Then the profile picker is shown
+
+    Scenario: An install from 0.4.0 gets the new entry when the plugin reloads
+      Given omaprofile's desktop entry is the one 0.4.0 wrote
+      When the plugin reloads
+      And Omaprofile is opened from the app launcher
+      Then the rules editor opens in a floating terminal
+
+    @nest
+    Scenario: From Super+Space
+      When Omaprofile is picked in the app launcher
+      Then the rules editor opens in a floating, centred terminal, like Omarchy's other TUIs
+      And q closes it
+
   Rule: It looks like the rest of Omarchy
 
     @nest

@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import select
+import shutil
 import signal
 import sys
 import termios
@@ -22,6 +23,7 @@ from pathlib import Path
 
 from . import config as cfgmod
 from .browser import Browser, BrowserError, Profile, check_rules, display_path
+from .picker import detached
 
 THEME_COLORS = cfgmod.STATE_HOME / "omarchy" / "current" / "theme" / "colors.toml"
 NO_RULES = "No rules yet. Shift+Enter in the picker adds one, or press a."
@@ -467,6 +469,15 @@ def run(cfg: dict) -> None:
         signal.signal(signal.SIGWINCH, old_winch)
         out.write("\x1b[0m\x1b[?25h\x1b[?1049l")
         out.flush()
+
+
+def open_in_terminal() -> None:
+    """The rules editor in a floating terminal, the way Omarchy's own TUI launchers do it
+    (omarchy-tui-install: xdg-terminal-exec --app-id=TUI.float). Replaces this process."""
+    from .install import LAUNCHER  # install imports browser, which this module needs first
+    if not shutil.which("xdg-terminal-exec"):
+        raise BrowserError("xdg-terminal-exec is not installed; run omaprofile rules in a terminal")
+    detached(["xdg-terminal-exec", "--app-id=TUI.float", "--title=Omaprofile rules", "-e", str(LAUNCHER), "rules"])
 
 
 def list_rules(cfg: dict) -> str:

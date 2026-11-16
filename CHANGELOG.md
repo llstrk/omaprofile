@@ -1,7 +1,7 @@
 # Changelog
 
 ## Unreleased
-- `omaprofile` in a terminal opens a rules editor: see, add, change, reorder and delete the rules that skip the picker.
+- `omaprofile` in a terminal, or Omaprofile in the app launcher, opens a rules editor: see, add, change, reorder and delete the rules that skip the picker.
 
 ## 0.4.0
 - Shift+Enter in the picker opens the link and remembers the profile for that site.

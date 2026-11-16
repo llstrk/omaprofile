@@ -190,6 +190,8 @@ omaprofile policy [recommend|restore]        Omarchy's Chromium theme policy: sh
                                              make it recommended, make it mandatory again
 omaprofile rules                             edit the browser rules (needs a terminal)
 omaprofile rules list                        print the rules in the order they are tried
+omaprofile desktop [url...]                  what the desktop entry runs: links open the
+                                             picker, none opens the rules editor
 omaprofile config                            print the config
 ```
 A bare URL, a browser flag, or no argument at all means `browser open`.
@@ -211,8 +213,11 @@ Profile colors and initials come from Chromium's profile color seed and name.
 For scripts and tests: `omarchy-shell shell call dry.omaprofile choose <index>`.
 
 ## Rules editor
-`omaprofile` in a terminal (or `omaprofile rules`) lists the browser rules in
-the order they are tried and changes them in place:
+**Omaprofile** in the app launcher (Super+Space), `omaprofile` in a terminal,
+or `omaprofile rules` lists the browser rules in the order they are tried and
+changes them in place. From the launcher it opens in a floating terminal, the
+way Omarchy's own TUIs do (`xdg-terminal-exec --app-id=TUI.float`); links
+sent to the same desktop entry still open the picker.
 
 | Key | |
 |---|---|
@@ -271,7 +276,10 @@ current Omarchy theme (`~/.local/state/omarchy/current/theme/colors.toml`).
 
 ## How it plugs in
 - `xdg-open` and any app resolving `x-scheme-handler/https` run
-  `omaprofile browser open <url>` via the desktop entry.
+  `omaprofile desktop <url>` via the desktop entry, which opens the picker.
+  Picked in the app launcher, the same entry has no link and opens the rules
+  editor; its New Window action still opens the picker. An update rewrites
+  an entry an older version wrote when the plugin reloads.
 - `omarchy launch browser` takes the first word of the desktop Exec and runs
   it under `uwsm-app` with just the URL (or nothing); the dispatcher treats
   that as `browser open`.

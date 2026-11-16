@@ -139,5 +139,29 @@ class ScreenTests(EditorCase):
         self.assertEqual(plain.styles["warn"], "\x1b[33m")
 
 
+class DesktopEntryRefreshTests(unittest.TestCase):
+    def setUp(self):
+        from omaprofile import install
+        self.install = install
+        self.entry = cfgmod.DESKTOP_FILE
+        self.entry.parent.mkdir(parents=True, exist_ok=True)
+        self.addCleanup(self.entry.unlink, missing_ok=True)
+
+    def test_an_entry_that_is_not_ours_is_left_alone(self):
+        self.entry.write_text("[Desktop Entry]\nName=Something else\nExec=/usr/bin/other %U\n")
+        self.assertFalse(self.install.refresh_desktop_entry())
+        self.assertIn("other", self.entry.read_text())
+
+    def test_a_current_entry_is_not_rewritten(self):
+        from omaprofile.browser import desktop_entry
+        self.entry.write_text(desktop_entry(cfgmod.BIN_LINK))
+        self.assertFalse(self.install.refresh_desktop_entry())
+
+    def test_no_entry_is_not_created(self):
+        self.entry.unlink(missing_ok=True)
+        self.assertFalse(self.install.refresh_desktop_entry())
+        self.assertFalse(self.entry.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

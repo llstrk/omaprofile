@@ -30,8 +30,8 @@ Version=1.0
 Type=Application
 Name=Omaprofile
 GenericName=Web Browser
-Comment=Pick a browser profile, then open the link
-Exec={exe} browser open %U
+Comment=Choose which sites open in which browser profile
+Exec={exe} desktop %U
 Icon=chromium
 Terminal=false
 StartupNotify=false
@@ -426,9 +426,13 @@ def default_browser() -> str:
                           capture_output=True, text=True).stdout.strip()
 
 
+def desktop_entry(exe: Path) -> str:
+    return DESKTOP_ENTRY.format(exe=desktop_exec_arg(exe), mime=";".join(MIME_TYPES))
+
+
 def register(exe: Path) -> None:
     cfgmod.DESKTOP_FILE.parent.mkdir(parents=True, exist_ok=True)
-    cfgmod.DESKTOP_FILE.write_text(DESKTOP_ENTRY.format(exe=desktop_exec_arg(exe), mime=";".join(MIME_TYPES)))
+    cfgmod.DESKTOP_FILE.write_text(desktop_entry(exe))
     subprocess.run(["update-desktop-database", str(cfgmod.DESKTOP_FILE.parent)], capture_output=True)
     set_default_browser(cfgmod.DESKTOP_ID)
 

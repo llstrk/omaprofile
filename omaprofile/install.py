@@ -32,7 +32,7 @@ from pathlib import Path
 from . import PLUGIN_ID
 from . import config as cfgmod
 from . import update
-from .browser import Browser, current_handlers, desktop_exec_arg, register, unregister
+from .browser import Browser, current_handlers, desktop_entry, desktop_exec_arg, register, unregister
 
 SRC_ROOT = Path(__file__).resolve().parent.parent
 LAUNCHER = SRC_ROOT / "bin" / "omaprofile"
@@ -486,6 +486,23 @@ def decline_setup() -> None:
     DECLINED_FILE.touch()
 
 
+def refresh_desktop_entry() -> bool:
+    """Rewrite omaprofile.desktop when an older version wrote it differently (0.4.0 ran
+    `browser open` with no link; now the launcher's Omaprofile opens the rules editor)."""
+    path = cfgmod.DESKTOP_FILE
+    try:
+        text = path.read_text()
+    except OSError:
+        return False
+    exe = desktop_exec_arg(cfgmod.BIN_LINK)
+    want = desktop_entry(cfgmod.BIN_LINK)
+    if text == want or "\nName=Omaprofile\n" not in text or f"\nExec={exe} " not in text:
+        return False  # current, or not the entry install wrote
+    path.write_text(want)
+    subprocess.run(["update-desktop-database", str(path.parent)], capture_output=True)
+    return True
+
+
 def refresh() -> bool:
     """Bring the launcher script and the web app route up to date with this checkout.
 
@@ -501,6 +518,8 @@ def refresh() -> bool:
             write_shim()
             changed = True
     if cfgmod.STATE_FILE.exists():
+        if refresh_desktop_entry():
+            changed = True
         if write_chromium_override():
             subprocess.run(["update-desktop-database", str(cfgmod.DESKTOP_FILE.parent)], capture_output=True)
             changed = True

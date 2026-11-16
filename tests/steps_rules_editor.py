@@ -19,6 +19,7 @@ wait for a key to be handled and read the result:
 import fcntl
 import json
 import os
+import shlex
 import struct
 import subprocess
 import termios
@@ -27,7 +28,35 @@ import time
 
 from gherkin import step
 from steps_rules import rules_table, write_config
-from steps_updates import CONFIG_HOME, Context
+from steps_updates import CONFIG_HOME, FAKES, HOME, Context
+
+DESKTOP_FILE = HOME / ".local" / "share" / "applications" / "omaprofile.desktop"
+BIN_LINK = HOME / ".local" / "bin" / "omaprofile"
+MIME = ("text/html;application/xhtml+xml;x-scheme-handler/http;x-scheme-handler/https;"
+        "x-scheme-handler/about;x-scheme-handler/unknown")
+ENTRY_0_4_0 = f"""\
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Omaprofile
+GenericName=Web Browser
+Comment=Pick a browser profile, then open the link
+Exec={BIN_LINK} browser open %U
+Icon=chromium
+Terminal=false
+StartupNotify=false
+Categories=Network;WebBrowser;
+MimeType={MIME};
+Actions=new-window;new-private-window;
+
+[Desktop Action new-window]
+Name=New Window
+Exec={BIN_LINK} browser open
+
+[Desktop Action new-private-window]
+Name=New Incognito Window
+Exec={BIN_LINK} browser open --incognito
+"""
 
 KEYS = {"Enter": "\r", "Esc": "\x1b", "Up": "\x1b[A", "Down": "\x1b[B", "Backspace": "\x7f", "Ctrl+U": "\x15"}
 TIMEOUT = 10
@@ -175,7 +204,74 @@ def no_profiles(ctx):
     (CONFIG_HOME / "chromium" / "Local State").unlink(missing_ok=True)
 
 
+def fake_terminal(ctx) -> None:
+    """xdg-terminal-exec is not among steps_updates' fakes: link it here."""
+    link = ctx.tmp / "bin" / "xdg-terminal-exec"
+    if not link.exists():
+        link.symlink_to(FAKES)
+
+
+@step("omaprofile's desktop entry is the one 0.4.0 wrote")
+def entry_0_4_0(ctx):
+    fake_terminal(ctx)
+    DESKTOP_FILE.parent.mkdir(parents=True, exist_ok=True)
+    DESKTOP_FILE.write_text(ENTRY_0_4_0)
+
+
+@step("omaprofile's desktop entry is set up")
+def entry_set_up(ctx):
+    entry_0_4_0(ctx)
+    ctx.run("install", "--auto")  # the plugin loading brings it up to date
+    assert DESKTOP_FILE.read_text() != ENTRY_0_4_0, "the plugin left the 0.4.0 entry as it was"
+
+
+def entry_exec(group: str) -> list[str]:
+    """The Exec of one group of omaprofile.desktop, split as a launcher would."""
+    current = ""
+    for line in DESKTOP_FILE.read_text().splitlines():
+        if line.startswith("["):
+            current = line
+        elif current == group and line.startswith("Exec="):
+            return shlex.split(line[len("Exec="):])
+    raise AssertionError(f"no Exec in {group} of {DESKTOP_FILE}")
+
+
+def run_entry(ctx, group: str, urls: list[str]) -> None:
+    """Run the entry as a launcher does (%U is the links, or nothing), with the plugin's CLI
+    in place of ~/.local/bin/omaprofile, which the scenarios do not write."""
+    argv = entry_exec(group)
+    assert argv[0] == str(BIN_LINK), f"the entry runs {argv[0]}, not {BIN_LINK}"
+    args = []
+    for a in argv[1:]:
+        args += urls if a in ("%U", "%u") else [a]
+    ctx.begin_action()
+    proc = ctx.run(*args)
+    assert proc.returncode == 0, ctx.output()
+
+
 # ------------------------------------------------------------------ When
+
+@step("Omaprofile is opened from the app launcher")
+def open_from_launcher(ctx):
+    run_entry(ctx, "[Desktop Entry]", [])
+
+
+@step("the desktop entry opens a link to {url}")
+def entry_opens_link(ctx, url):
+    run_entry(ctx, "[Desktop Entry]", [url])
+
+
+@step("the desktop entry's {name} action runs")
+def entry_action(ctx, name):
+    groups, current = {}, ""
+    for line in DESKTOP_FILE.read_text().splitlines():
+        if line.startswith("["):
+            current = line
+        elif line.startswith("Name="):
+            groups[line[len("Name="):]] = current
+    assert name in groups, f"no action {name!r} in {DESKTOP_FILE}"
+    run_entry(ctx, groups[name], [])
+
 
 @step("I run {command} in a terminal")
 def run_in_terminal(ctx, command):
@@ -223,6 +319,25 @@ def change_rule(ctx, n, pattern, profile):
 
 
 # ------------------------------------------------------------------ Then
+
+def terminals(ctx) -> list[list[str]]:
+    return [c["args"] for c in ctx.calls("xdg-terminal-exec")]
+
+
+@step("the rules editor opens in a floating terminal")
+def editor_in_floating_terminal(ctx):
+    runs = terminals(ctx)
+    assert runs, f"no terminal opened; calls: {[c['tool'] for c in ctx.calls()]}"
+    args = runs[-1]
+    assert "--app-id=TUI.float" in args, f"not Omarchy's floating TUI class: {args}"
+    command = args[args.index("-e") + 1:]
+    assert command[0].endswith("/bin/omaprofile") and command[1:] == ["rules"], f"runs {command}"
+
+
+@step("no floating terminal opens")
+def no_terminal(ctx):
+    assert not terminals(ctx), f"a terminal opened: {terminals(ctx)}"
+
 
 @step("the rules editor is shown")
 def editor_shown(ctx):
