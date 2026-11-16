@@ -260,12 +260,7 @@ def add_rule(rule: dict, path: Path | None = None) -> None:
     section = cfg.setdefault("browser", {})
     rules = check_rules(section.get("rules", []))
     section["rules"] = [r for r in rules if not (set(r) <= {"host", "profile"} and r["host"] == rule["host"])] + [rule]
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n")
-    if path.exists():
-        shutil.copymode(path, tmp)
-    os.replace(tmp, path)
+    cfgmod.save(cfg, path)
 
 
 def display_path(path: Path) -> str:

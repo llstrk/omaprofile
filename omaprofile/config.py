@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 from pathlib import Path
 
 HOME = Path.home()
@@ -58,3 +59,13 @@ def load(path: Path = CONFIG_FILE) -> dict:
 def write_default(path: Path = CONFIG_FILE) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(DEFAULT_CONFIG, indent=2) + "\n")
+
+
+def save(cfg: dict, path: Path = CONFIG_FILE) -> None:
+    """Write the config atomically, keeping the file's mode."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n")
+    if path.exists():
+        shutil.copymode(path, tmp)
+    os.replace(tmp, path)

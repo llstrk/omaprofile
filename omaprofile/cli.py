@@ -23,6 +23,7 @@ from .install import (CLEANUP_DIR, CLEANUP_LOCK, LAUNCHER, InstallError, decline
                       plugin_was_removed, remove_cleanup_copy, setup_state, uninstall)
 from .picker import Choice, PickerError, notify, pick
 from . import policy
+from . import rules as rulesmod
 from . import update
 
 USAGE = """\
@@ -48,6 +49,8 @@ omaprofile — pick a profile before something launches.
   omaprofile uninstall [fallback.desktop]      undo install, restore the previous browser
   omaprofile policy [recommend|restore]        Omarchy's Chromium theme policy: show,
                                                make it recommended, make it mandatory again
+  omaprofile rules                             edit the browser rules (needs a terminal)
+  omaprofile rules list                        print the rules in the order they are tried
   omaprofile config                            print the config
   omaprofile update                            show what's new, ask, update through Omarchy
   omaprofile update --check                    look for a new version now
@@ -57,7 +60,8 @@ omaprofile — pick a profile before something launches.
                                                hide the icon until the next version
 
 A bare URL, browser flag, or no argument at all means `browser open`, which
-is what the desktop entry and `omarchy launch browser` send.
+is what the desktop entry and `omarchy launch browser` send. With no argument
+in a terminal, omaprofile opens the rules editor instead.
 """
 
 
@@ -401,6 +405,18 @@ def cmd_update(cfg: dict, args: list[str]) -> None:
             sys.exit(code)
 
 
+def cmd_rules(cfg: dict, args: list[str]) -> None:
+    action, rest = split_action(args, default="edit")
+    if action == "list" and not rest:
+        print(rulesmod.list_rules(cfg))
+    elif action == "edit" and not rest:
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            raise UsageError("omaprofile rules needs a terminal (omaprofile rules list prints them)")
+        rulesmod.run(cfg)
+    else:
+        raise UsageError("usage: omaprofile rules [list]")
+
+
 def cmd_help(cfg: dict, args: list[str]) -> None:
     print(USAGE, end="")
 
@@ -416,6 +432,7 @@ GROUPS = {
     "uninstall": cmd_uninstall,
     "policy": cmd_policy,
     "config": cmd_config,
+    "rules": cmd_rules,
     "update": cmd_update,
     "help": cmd_help,
     "-h": cmd_help,
@@ -429,6 +446,9 @@ def dispatch(argv: list[str]) -> None:
     cfg = cfgmod.load()
     if argv and argv[0].startswith("--app="):  # omarchy-launch-webapp: <chromium.desktop's command> --app=URL
         cmd_chromium(cfg, argv)
+        return
+    if not argv and sys.stdin.isatty() and sys.stdout.isatty():  # typed in a terminal, not a keybinding
+        cmd_rules(cfg, [])
         return
     group, rest = split_action(argv, default="browser")
     if group in GROUPS:
