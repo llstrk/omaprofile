@@ -8,6 +8,7 @@ from pathlib import Path
 import sandbox  # noqa: F401  - the throwaway home, before omaprofile is imported
 import steps_updates  # noqa: F401  - registers the step definitions
 import steps_rules  # noqa: F401  - and those of rules.feature
+import steps_rules_editor  # noqa: F401  - and rules-editor.feature
 from gherkin import test_suite
 from steps_updates import Context
 

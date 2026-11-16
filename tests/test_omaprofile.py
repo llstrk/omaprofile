@@ -784,7 +784,7 @@ class DesktopEntryTargetTests(InstallFixtureCase):
             from omaprofile.browser import register
             register(cfgmod.BIN_LINK)
             entry = cfgmod.DESKTOP_FILE.read_text()
-        self.assertIn("Exec=/home/me/.local/bin/omaprofile browser open %U", entry)
+        self.assertIn("Exec=/home/me/.local/bin/omaprofile desktop %U", entry)
         self.assertNotIn("My Code", entry)
         inst.write_chromium_override()
         self.assertEqual(launch_webapp_command(self.apps / "chromium.desktop"), "/home/me/.local/bin/omaprofile")
